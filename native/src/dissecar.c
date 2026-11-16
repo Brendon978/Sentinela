@@ -173,8 +173,10 @@ size_t sn_dissecar(const uint8_t *p, size_t n, char *s, size_t cap) {
         escreve(&o, "  Checksum: 0x%04x [%s]\n", campo, sn_transporte_checksum_ok(p, &ip) ? "correto" : "errado");
         app = l4 + t.tam_cabecalho;
         char sni[SN_NOME_MAX + 1];
-        if (dados && sn_tls_sni(app, dados, sni, sizeof sni) == SN_OK)
-            escreve(&o, "\nTLS ClientHello\n  SNI: %s\n", sni);
+        int ech = 0;
+        if (dados && sn_tls_sni(app, dados, sni, sizeof sni, &ech) == SN_OK)
+            escreve(&o, "\nTLS ClientHello\n  SNI: %s\n  ECH: %s\n", sni,
+                    ech ? "sim (o SNI é o nome público do provedor)" : "não");
     } else {
         app = l4;
         dados = n4;

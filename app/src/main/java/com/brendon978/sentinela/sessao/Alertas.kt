@@ -1,5 +1,6 @@
 package com.brendon978.sentinela.sessao
 
+import com.brendon978.sentinela.ia.Atributos
 import java.time.Instant
 import java.time.ZoneId
 
@@ -10,6 +11,7 @@ enum class Regra(val titulo: String) {
     RASTREADOR("Rastreador conhecido"),
     PORTA_INCOMUM("Porta incomum"),
     DNS_ESCONDIDO("DNS fora do caminho normal (DoT, DoH ou DNS direto)"),
+    COMPORTAMENTO_ANOMALO("Comportamento fora do padrão do app (IA)"),
 }
 
 data class Alerta(
@@ -33,6 +35,10 @@ object Alertas {
         val dominiosVistos: Set<Pair<String, String>>,
         /** DNS virtual do tun e DNS reais da rede: falar com eles é o caminho normal. */
         val dnsVirtuais: Set<String>,
+        /** (pacote, regra) que o usuário mandou ignorar. */
+        val excecoes: Set<Pair<String?, Regra>> = emptySet(),
+        /** Modelo do normal de cada app (treinado com sessões anteriores); null = sem IA. */
+        val linhaDeBase: com.brendon978.sentinela.ia.LinhaDeBase? = null,
     ) {
         /** Apps que já têm histórico (só eles disparam "domínio novo"). Calculado uma vez. */
         val appsComHistorico: Set<String> by lazy { dominiosVistos.mapTo(HashSet()) { it.first } }
@@ -51,13 +57,31 @@ object Alertas {
     fun avaliar(linhas: List<LinhaFluxo>, c: Contexto): List<Alerta> {
         val vistos = HashSet<Pair<String?, Regra>>()
         val saida = mutableListOf<Alerta>()
+        val anomalias = c.linhaDeBase?.avaliar(linhas).orEmpty().associateBy { it.fluxoId }
         for (l in linhas.sortedBy { it.inicioUs }) {
-            for ((regra, detalhe) in disparos(l, c)) {
+            val ia = anomalias[l.fluxoId]?.let { Regra.COMPORTAMENTO_ANOMALO to explicar(it, l) }
+            for ((regra, detalhe) in disparos(l, c) + listOfNotNull(ia)) {
+                if ((l.pacoteApp to regra) in c.excecoes) continue
                 if (vistos.add(l.pacoteApp to regra))
                     saida += Alerta(regra, l.pacoteApp, l.rotulo, l.fluxoId, detalhe, l.inicioUs)
             }
         }
         return saida
+    }
+
+    /** Em palavras: o que fugiu do padrão e com que nota. */
+    private fun explicar(a: com.brendon978.sentinela.ia.Achado, l: LinhaFluxo): String {
+        val o_que = when (a.indice) {
+            Atributos.BYTES_ENVIADOS -> "volume enviado fora do padrão (${com.brendon978.sentinela.ui.Lista.bytes(l.bytesEnviados)})"
+            Atributos.BYTES_RECEBIDOS -> "volume recebido fora do padrão (${com.brendon978.sentinela.ui.Lista.bytes(l.bytesRecebidos)})"
+            Atributos.PACOTES -> "número de pacotes fora do padrão (${l.pacotes})"
+            Atributos.DURACAO -> "duração fora do padrão"
+            Atributos.HORA_SEN, Atributos.HORA_COS -> "horário em que o app não costuma conectar"
+            Atributos.FREQUENCIA_PORTA -> "porta que o app não costuma usar (${l.portaDestino})"
+            Atributos.FREQUENCIA_TELA -> if (l.telaDesligada) "conexão com a tela desligada, fora do costume do app" else "conexão com a tela ligada, fora do costume do app"
+            else -> "combinação fora do padrão"
+        }
+        return "${l.dominio ?: l.ipDestino}: $o_que; nota ${"%.3f".format(java.util.Locale.ROOT, a.nota)} (limiar ${"%.3f".format(java.util.Locale.ROOT, a.limiar)})"
     }
 
     private fun disparos(l: LinhaFluxo, c: Contexto): List<Pair<Regra, String>> {

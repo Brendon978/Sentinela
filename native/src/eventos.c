@@ -115,8 +115,8 @@ void sn_ev_dns(sn_motor *m, const sn_dns_resposta *r) {
     sn_fila_por(&m->fila, SN_EV_DNS, c, (uint16_t)i);
 }
 
-void sn_ev_sni(sn_motor *m, const sn_fluxo *f, const char *nome) {
-    uint8_t c[4 + 2 + SN_NOME_MAX];
+void sn_ev_sni(sn_motor *m, const sn_fluxo *f, const char *nome, int ech) {
+    uint8_t c[4 + 2 + SN_NOME_MAX + 1];
     size_t tam = strlen(nome);
     if (tam > SN_NOME_MAX)
         tam = SN_NOME_MAX;
@@ -124,5 +124,6 @@ void sn_ev_sni(sn_motor *m, const sn_fluxo *f, const char *nome) {
     i += p16(c + i, (uint32_t)tam);
     memcpy(c + i, nome, tam);
     i += tam;
+    c[i++] = ech ? 1 : 0;
     sn_fila_por(&m->fila, SN_EV_SNI, c, (uint16_t)i);
 }

@@ -247,9 +247,10 @@ static void procura_sni(sn_motor *m, sn_fluxo *f, estado_tcp *e, const uint8_t *
         return;
     }
     char nome[SN_NOME_MAX + 1];
-    int r = sn_tls_sni(e->ci, e->n_ci, nome, sizeof nome);
+    int ech = 0;
+    int r = sn_tls_sni(e->ci, e->n_ci, nome, sizeof nome, &ech);
     if (r == SN_OK)
-        sn_ev_sni(m, f, nome);
+        sn_ev_sni(m, f, nome, ech);
     if (r != SN_ERR_CURTO || e->n_ci >= SNI_MAX) {
         e->sni_fim = 1;
         free(e->ci);

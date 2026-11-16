@@ -81,6 +81,7 @@ TESTE(dissecar_client_hello_mostra_sni) {
     CONFERE(dissecar_fixture("tls_client_hello_sni"));
     CONFERE(tem("\nTLS ClientHello\n"));
     CONFERE(tem("  SNI: www.exemplo.com.br\n"));
+    CONFERE(tem("  ECH: não\n"));
 }
 
 TESTE(dissecar_checksum_errado_aparece) {

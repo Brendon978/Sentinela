@@ -146,8 +146,29 @@ TESTE(nomes_sni_client_hello_real) {
     size_t n = payload("tls_client_hello_sni", p, sizeof p, &d);
     CONFERE_IGUAL_INT(n, 1534); /* tshark: tcp.len 1534 */
     char nome[SN_NOME_MAX + 1];
-    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome), SN_OK);
+    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome, NULL), SN_OK);
     CONFERE(strcmp(nome, "www.exemplo.com.br") == 0);
+}
+
+TESTE(nomes_sni_com_ech_e_marcado) {
+    uint8_t p[2048];
+    const uint8_t *d;
+    size_t n = payload("tls_client_hello_ech", p, sizeof p, &d);
+    char nome[SN_NOME_MAX + 1];
+    int ech = 0;
+    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome, &ech), SN_OK);
+    CONFERE(strcmp(nome, "cloudflare-ech.com") == 0); /* tshark: SNI cloudflare-ech.com */
+    CONFERE_IGUAL_INT(ech, 1);                        /* tshark: encrypted_client_hello presente */
+}
+
+TESTE(nomes_sni_sem_ech_nao_e_marcado) {
+    uint8_t p[2048];
+    const uint8_t *d;
+    size_t n = payload("tls_client_hello_sni", p, sizeof p, &d);
+    char nome[SN_NOME_MAX + 1];
+    int ech = 1;
+    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome, &ech), SN_OK);
+    CONFERE_IGUAL_INT(ech, 0);
 }
 
 TESTE(nomes_sni_ausente) {
@@ -155,7 +176,7 @@ TESTE(nomes_sni_ausente) {
     const uint8_t *d;
     size_t n = payload("tls_client_hello_sem_sni", p, sizeof p, &d);
     char nome[SN_NOME_MAX + 1];
-    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome), SN_ERR_FORMATO);
+    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome, NULL), SN_ERR_FORMATO);
 }
 
 TESTE(nomes_sni_partido_pede_mais_bytes) {
@@ -168,7 +189,7 @@ TESTE(nomes_sni_partido_pede_mais_bytes) {
         uint8_t *c = malloc(k ? k : 1);
         memcpy(c, d, k);
         char nome[SN_NOME_MAX + 1];
-        int r = sn_tls_sni(c, k, nome, sizeof nome);
+        int r = sn_tls_sni(c, k, nome, sizeof nome, NULL);
         free(c);
         if (r != SN_ERR_CURTO && !(r == SN_OK && strcmp(nome, "www.exemplo.com.br") == 0)) {
             fprintf(stderr, "  corte em %zu bytes devolveu %d\n", k, r);
@@ -180,7 +201,7 @@ TESTE(nomes_sni_partido_pede_mais_bytes) {
 TESTE(nomes_sni_nao_e_tls) {
     const char *http = "GET / HTTP/1.1\r\nHost: exemplo.com\r\n\r\n";
     char nome[64];
-    CONFERE_IGUAL_INT(sn_tls_sni((const uint8_t *)http, strlen(http), nome, sizeof nome), SN_ERR_FORMATO);
+    CONFERE_IGUAL_INT(sn_tls_sni((const uint8_t *)http, strlen(http), nome, sizeof nome, NULL), SN_ERR_FORMATO);
 }
 
 TESTE(nomes_sni_nome_nao_cabe) {
@@ -188,5 +209,5 @@ TESTE(nomes_sni_nome_nao_cabe) {
     const uint8_t *d;
     size_t n = payload("tls_client_hello_sni", p, sizeof p, &d);
     char nome[8];
-    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome), SN_ERR_TAMANHO);
+    CONFERE_IGUAL_INT(sn_tls_sni(d, n, nome, sizeof nome, NULL), SN_ERR_TAMANHO);
 }

@@ -42,7 +42,10 @@ enum class Protocolo(val numero: Int) {
 }
 
 enum class MotivoFim(val codigo: Int) {
-    FECHADO(0), RESET(1), TEMPO(2), ERRO(3), DESCONHECIDO(-1);
+    FECHADO(0), RESET(1), TEMPO(2), ERRO(3),
+    /** Ainda aberta quando a gravação acabou: volume e duração parciais. */
+    FIM_DA_SESSAO(4),
+    DESCONHECIDO(-1);
 
     companion object {
         fun de(n: Int) = entries.firstOrNull { it.codigo == n } ?: DESCONHECIDO
@@ -61,7 +64,8 @@ sealed interface Evento {
     data class FluxoBytes(val id: Long, val bytesEnviados: Long, val bytesRecebidos: Long, val pacotes: Long) : Evento
     data class FluxoFim(val id: Long, val fimUs: Long, val motivo: MotivoFim) : Evento
     data class Dns(val enderecos: List<Ip>, val nome: String) : Evento
-    data class Sni(val id: Long, val nome: String) : Evento
+    /** `ech`: o ClientHello usa Encrypted Client Hello; o nome é o público do provedor, não o site. */
+    data class Sni(val id: Long, val nome: String, val ech: Boolean = false) : Evento
     data class Perda(val descartados: Long) : Evento
 }
 
@@ -143,7 +147,9 @@ object Eventos {
             val id = l.u32()
             val tamNome = l.u16()
             exige(l, tamNome)
-            Evento.Sni(id, l.texto(tamNome))
+            val nome = l.texto(tamNome)
+            // byte de ECH acrescentado na v1.1: motores antigos não mandam
+            Evento.Sni(id, nome, ech = l.resta() >= 1 && l.u8() != 0)
         }
         6 -> {
             exige(l, 4)

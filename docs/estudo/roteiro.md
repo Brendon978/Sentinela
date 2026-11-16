@@ -22,9 +22,9 @@ quando o artigo começar a ser escrito.
 
 ## Módulo 1 — Bits, bytes e números ([aula](aulas/01-bits-e-bytes.md))
 
-- [ ] Sistema binário: contar, converter de/para decimal na mão
-- [ ] Hexadecimal: por que existe, converter de/para binário e decimal
-- [ ] Bit, nibble, byte, palavra; quanto cabe em 8, 16, 32 e 64 bits
+- [x] Sistema binário: contar, converter de/para decimal na mão
+- [x] Hexadecimal: por que existe, converter de/para binário e decimal
+- [x] Bit, nibble, byte, palavra; quanto cabe em 8, 16, 32 e 64 bits
 - [ ] Operações bit a bit: AND, OR, XOR, NOT, deslocamento (`<<`, `>>`)
 - [ ] Máscaras: ligar, desligar e testar um bit
 - [ ] Números negativos: complemento de dois (e o complemento de um, usado no checksum)

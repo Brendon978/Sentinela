@@ -101,12 +101,20 @@ data class ResumoApp(
     val bytesRecebidos: Long,
     val dominios: Set<String>,
     val rastreadores: Set<String>,
-)
+) {
+    /** Chave do grupo (e da lista na tela): o pacote; sem pacote, o rótulo ("DNS do sistema", "desconhecido"). */
+    val chave: String get() = chaveDe(pacote, rotulo)
+
+    companion object {
+        fun chaveDe(pacote: String?, rotulo: String) = pacote ?: ("\u0000" + rotulo)
+    }
+}
 
 object PorApp {
-    /** Agrupa por app (pacote; sem pacote = sistema/desconhecido), do que mais trafegou ao que menos. */
+    /** Agrupa por app (pacote; sem pacote, pelo rótulo: "DNS do sistema" e "desconhecido" ficam separados). */
     fun resumir(linhas: List<LinhaFluxo>): List<ResumoApp> =
-        linhas.groupBy { it.pacoteApp }.map { (pacote, ls) ->
+        linhas.groupBy { ResumoApp.chaveDe(it.pacoteApp, it.rotulo) }.map { (_, ls) ->
+            val pacote = ls.first().pacoteApp
             val dominios = ls.mapNotNull { it.dominio }.toSet()
             ResumoApp(
                 pacote, ls.firstNotNullOfOrNull { it.rotuloApp } ?: App.SEM_APP, ls.size,

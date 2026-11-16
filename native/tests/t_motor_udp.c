@@ -271,7 +271,7 @@ TESTE(motor_encerrar_fecha_fluxos_abertos) {
     CONFERE(ok);
     CONFERE_IGUAL_INT(ret, 0);
     CONFERE(fim != NULL);
-    CONFERE_IGUAL_INT(motivo, SN_FIM_FECHADO);
+    CONFERE_IGUAL_INT(motivo, SN_FIM_SESSAO); /* cortado pelo fim da gravação, não fechado pelo app */
 }
 
 static uint64_t mono_real_ms(void) {

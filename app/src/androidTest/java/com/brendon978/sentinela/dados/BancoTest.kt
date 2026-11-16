@@ -75,6 +75,70 @@ class BancoTest {
         assertEquals(2, banco.sessoes().size)
     }
 
+    @Test fun gravacaoContinuaSemDuplicarEFechaNoFim() {
+        val id = banco.abrirSessao(1000, "/x/sessao-1000.pcap")
+        assertEquals(listOf(EstadoSessaoSalva.GRAVANDO), banco.sessoes().map { it.estado })
+        banco.gravarParcial(id, listOf(linha(1, "com.a", "a.com")), emptyList(), 2000)
+        // o mesmo fluxo com bytes novos + um fluxo novo: atualiza, não duplica
+        banco.gravarParcial(id, listOf(linha(1, "com.a", "a.com").copy(bytesRecebidos = 99), linha(2, "com.b", "b.com")), emptyList(), 3000)
+        val f = banco.fluxos(id)
+        assertEquals(listOf(1L, 2L), f.map { it.fluxoId }.sorted())
+        assertEquals(99L, f.first { it.fluxoId == 1L }.bytesRecebidos)
+        assertEquals(emptySet<Pair<String, String>>(), banco.dominiosVistos()) // só aprende ao concluir
+        banco.concluirSessao(id, "hash", 7, 300, 4000, 0, f, emptyList())
+        val s = banco.sessoes().single()
+        assertEquals(EstadoSessaoSalva.CONCLUIDA, s.estado)
+        assertEquals("hash", s.sha256)
+        assertEquals(7L, s.pacotes)
+        assertEquals(2, banco.dominiosVistos().size)
+    }
+
+    @Test fun sessaoQueFicouGravandoViraInterrompida() {
+        val pcap = java.io.File(ctx.cacheDir, "interrompida.pcap")
+        // cabeçalho global + 1 registro inteiro de 4 bytes + 1 registro cortado
+        val global = byteArrayOf(0xd4.toByte(), 0xc3.toByte(), 0xb2.toByte(), 0xa1.toByte(), 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, 0, 0, 101, 0, 0, 0)
+        val reg = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 1, 2, 3, 4)
+        pcap.writeBytes(global + reg + reg.copyOf(10))
+        val viva = banco.abrirSessao(1, pcap.absolutePath)
+        val gravandoAgora = banco.abrirSessao(2, "/outra.pcap")
+        com.brendon978.sentinela.sessao.SessaoFinal.usando(gravandoAgora) // o serviço marca a sessão que abriu
+        try {
+            com.brendon978.sentinela.sessao.SessaoFinal.recuperar(banco)
+        } finally {
+            com.brendon978.sentinela.sessao.SessaoFinal.liberou(gravandoAgora)
+        }
+        val porId = banco.sessoes().associateBy { it.id }
+        assertEquals(EstadoSessaoSalva.INTERROMPIDA, porId.getValue(viva).estado)
+        assertEquals(1L, porId.getValue(viva).pacotes)
+        assertEquals(64, porId.getValue(viva).sha256.length)
+        assertEquals(EstadoSessaoSalva.GRAVANDO, porId.getValue(gravandoAgora).estado)
+        pcap.delete()
+    }
+
+    @Test fun recuperarNaoMexeNaSessaoEmUsoNemNaConcluida() {
+        val emUso = banco.abrirSessao(1, "/em-uso.pcap")         // gravando ou fechando neste processo
+        val concluida = banco.abrirSessao(2, "/concluida.pcap")
+        banco.concluirSessao(concluida, "h", 1, 1, 3, 0, emptyList(), emptyList())
+        com.brendon978.sentinela.sessao.SessaoFinal.usando(emUso)
+        try {
+            com.brendon978.sentinela.sessao.SessaoFinal.recuperar(banco)
+        } finally {
+            com.brendon978.sentinela.sessao.SessaoFinal.liberou(emUso)
+        }
+        // e o "interrompida" não sobrescreve uma sessão que já foi concluída
+        banco.marcarInterrompida(concluida, "outro", 99)
+        val porId = banco.sessoes().associateBy { it.id }
+        assertEquals(EstadoSessaoSalva.GRAVANDO, porId.getValue(emUso).estado)
+        assertEquals(EstadoSessaoSalva.CONCLUIDA, porId.getValue(concluida).estado)
+        assertEquals("h", porId.getValue(concluida).sha256)
+    }
+
+    @Test fun parcialGuardaEventosPerdidos() {
+        val id = banco.abrirSessao(1, "/x.pcap")
+        banco.gravarParcial(id, emptyList(), emptyList(), 2, eventosPerdidos = 12)
+        assertEquals(12L, banco.sessoes().single().eventosPerdidos)
+    }
+
     @Test fun apagarSessaoLevaOsFluxosJunto() {
         val id = banco.salvarSessao(SessaoSalva(0, 1, 2, "/x", "h", 0, 0, 0), listOf(linha(1, null, null)), 1)
         banco.apagarSessao(id)

@@ -40,6 +40,18 @@ class AgregadorTest {
         assertEquals(OrigemDominio.SNI, c.origemDominio)
     }
 
+    @Test fun `sni com ech nao apaga o nome real que veio do dns`() {
+        val a = agregador()
+        a.aplicar(Evento.Dns(listOf(servidor), "site-de-verdade.com"))
+        a.aplicar(novo(1))
+        a.aplicar(Evento.Sni(1, "cloudflare-ech.com", ech = true))
+        assertEquals("site-de-verdade.com", a.conexoes.getValue(1).dominio)
+        // sem nome pelo DNS, o do ECH é o que há (marcado)
+        a.aplicar(novo(2, ip4(9, 9, 9, 9)))
+        a.aplicar(Evento.Sni(2, "cloudflare-ech.com", ech = true))
+        assertEquals(OrigemDominio.SNI_ECH, a.conexoes.getValue(2).origemDominio)
+    }
+
     @Test fun `dns que chega depois preenche quem estava sem dominio mas nao troca sni`() {
         val a = agregador()
         a.aplicar(novo(1))

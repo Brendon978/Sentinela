@@ -20,9 +20,9 @@ const char *sn_versao(void);
 enum {
     SN_EV_FLUXO_NOVO = 1,  /* u32 id, u8 versao, u8 proto, u8[16] ip_orig, u16 porta_orig, u8[16] ip_dest, u16 porta_dest, u64 inicio_us */
     SN_EV_FLUXO_BYTES = 2, /* u32 id, u64 bytes_env, u64 bytes_rec, u32 pacotes (totais) */
-    SN_EV_FLUXO_FIM = 3,   /* u32 id, u64 fim_us, u8 motivo (SN_FIM_*) */
+    SN_EV_FLUXO_FIM = 3,   /* u32 id, u64 fim_us, u8 motivo (SN_FIM_*; 4 = cortado pelo fim da sessão, v1.1) */
     SN_EV_DNS = 4,         /* u16 n, u8 versao[n], u8[16] ip[n], u16 tam_nome, nome */
-    SN_EV_SNI = 5,         /* u32 id, u16 tam_nome, nome */
+    SN_EV_SNI = 5,         /* u32 id, u16 tam_nome, nome, u8 ech (1 = ClientHello com ECH; v1.1) */
     SN_EV_PERDA = 6,       /* u32 eventos_descartados */
 };
 

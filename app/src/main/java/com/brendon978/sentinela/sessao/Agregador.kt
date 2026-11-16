@@ -6,7 +6,8 @@ import com.brendon978.sentinela.motor.MotivoFim
 import com.brendon978.sentinela.motor.Protocolo
 import com.brendon978.sentinela.vpn.App
 
-enum class OrigemDominio { SNI, DNS, NENHUM }
+/** SNI_ECH: veio do SNI, mas o ClientHello usa ECH — é o nome público do provedor, não o site. */
+enum class OrigemDominio { SNI, SNI_ECH, DNS, NENHUM }
 
 data class Conexao(
     val id: Long,
@@ -65,7 +66,11 @@ class Agregador(
                 it.copy(bytesEnviados = e.bytesEnviados, bytesRecebidos = e.bytesRecebidos, pacotes = e.pacotes)
             }
             is Evento.FluxoFim -> atualiza(e.id) { it.copy(fimUs = e.fimUs, motivo = e.motivo) }
-            is Evento.Sni -> atualiza(e.id) { it.copy(dominio = e.nome, origemDominio = OrigemDominio.SNI) }
+            is Evento.Sni -> atualiza(e.id) {
+                // com ECH o SNI é o nome público do provedor: o nome que veio do DNS é melhor
+                if (e.ech && it.origemDominio == OrigemDominio.DNS) it
+                else it.copy(dominio = e.nome, origemDominio = if (e.ech) OrigemDominio.SNI_ECH else OrigemDominio.SNI)
+            }
             is Evento.Dns -> {
                 e.enderecos.forEach { nomePorIp[it] = e.nome }
                 val alvos = e.enderecos.toSet()

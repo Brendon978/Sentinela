@@ -41,7 +41,9 @@ int sn_dns_ler_resposta(const uint8_t *p, size_t n, sn_dns_resposta *out);
  *   SN_ERR_CURTO   ainda faltam bytes: chame de novo com mais dados
  *   SN_ERR_FORMATO não é TLS ClientHello, ou não tem SNI: não adianta tentar de novo
  *   SN_ERR_TAMANHO o nome não cabe em `cap` (incluindo o '\0')
+ * Com SN_OK, *ech (se não NULL) diz se o ClientHello tem a extensão Encrypted Client Hello
+ * (0xfe0d): aí o SNI visível é o nome público do provedor, não o site de verdade.
  */
-int sn_tls_sni(const uint8_t *p, size_t n, char *nome, size_t cap);
+int sn_tls_sni(const uint8_t *p, size_t n, char *nome, size_t cap, int *ech);
 
 #endif

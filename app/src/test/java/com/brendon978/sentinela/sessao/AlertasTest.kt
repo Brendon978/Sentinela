@@ -69,6 +69,29 @@ class AlertasTest {
         ).map { it.regra })
     }
 
+    @Test fun `excecao silencia so aquela regra daquele app`() {
+        val linhas = listOf(l(1, pacote = "com.whatsapp", porta = 5222, dominio = null), l(2, pacote = "com.outro", porta = 5222, dominio = null))
+        val c = Alertas.Contexto(sp, emptySet(), emptySet(), excecoes = setOf("com.whatsapp" to Regra.PORTA_INCOMUM))
+        val a = Alertas.avaliar(linhas, c)
+        assertEquals(listOf("com.outro"), a.map { it.pacote })
+        // a exceção não cala outra regra do mesmo app
+        val rastreador = Alertas.avaliar(listOf(l(3, pacote = "com.whatsapp", dominio = "x.doubleclick.net")), c)
+        assertEquals(listOf(Regra.RASTREADOR), rastreador.map { it.regra })
+    }
+
+    @Test fun `ia aponta o fluxo fora do padrao do app com o motivo`() {
+        // a IA só julga conexões encerradas (com fim)
+        fun fechado(x: LinhaFluxo) = x.copy(fimUs = x.inicioUs + 30_000_000)
+        val historico = List(150) { fechado(l(it.toLong(), pacote = "com.app", dominio = "api.app.com").copy(bytesEnviados = 1_000L + it, sessaoId = it % 3L)) }
+        val base = com.brendon978.sentinela.ia.LinhaDeBase.treinar(historico, sp)
+        val c = Alertas.Contexto(sp, emptySet(), emptySet(), linhaDeBase = base)
+        val normal = fechado(l(500, pacote = "com.app", dominio = "api.app.com").copy(bytesEnviados = 1_050))
+        val vazamento = fechado(l(501, pacote = "com.app", dominio = "api.app.com").copy(bytesEnviados = 80_000_000))
+        val a = Alertas.avaliar(listOf(normal, vazamento), c).filter { it.regra == Regra.COMPORTAMENTO_ANOMALO }
+        assertEquals(listOf(501L), a.map { it.fluxoId })
+        assertTrue(a.single().detalhe.contains("enviado"))
+    }
+
     @Test fun `um alerta por app e regra, com o primeiro fluxo`() {
         val a = Alertas.avaliar(
             listOf(l(1, dominio = "a.doubleclick.net"), l(2, dominio = "b.doubleclick.net"), l(3, pacote = "com.outro", dominio = "c.doubleclick.net")),

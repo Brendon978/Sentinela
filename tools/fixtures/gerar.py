@@ -32,6 +32,27 @@ def client_hello(nome: str | None) -> bytes:
     return saida.read()
 
 
+def com_ech(ch: bytes) -> bytes:
+    """Acrescenta uma extensão encrypted_client_hello (0xfe0d) no fim das extensões de um
+    ClientHello real, ajustando os três tamanhos (registro, handshake e lista de extensões).
+    O conteúdo é de mentira: só a presença da extensão importa para o parser."""
+    # outer: tipo 0, suíte (KDF 1, AEAD 1), config id 5, enc vazio, payload de 4 bytes
+    corpo = bytes([0]) + struct.pack(">HH", 1, 1) + bytes([5]) + struct.pack(">H", 0) + struct.pack(">H", 4) + b"\xde\xad\xbe\xef"
+    ext = struct.pack(">HH", 0xFE0D, len(corpo)) + corpo
+    i = 5 + 4 + 2 + 32                  # registro + handshake + versão + random
+    i += 1 + ch[i]                      # session id
+    i += 2 + struct.unpack(">H", ch[i:i + 2])[0]  # cipher suites
+    i += 1 + ch[i]                      # compressão
+    tam_ext = struct.unpack(">H", ch[i:i + 2])[0]
+    fim = i + 2 + tam_ext
+    novo = bytearray(ch[:fim] + ext + ch[fim:])
+    novo[i:i + 2] = struct.pack(">H", tam_ext + len(ext))
+    tam_hs = int.from_bytes(novo[6:9], "big") + len(ext)
+    novo[6:9] = tam_hs.to_bytes(3, "big")
+    novo[3:5] = struct.pack(">H", struct.unpack(">H", ch[3:5])[0] + len(ext))
+    return bytes(novo)
+
+
 def dns_resposta(**campos) -> DNS:
     return DNS(id=0x1234, qr=1, rd=1, ra=1, **campos)
 
@@ -108,6 +129,11 @@ FIXTURES = {
         "ClientHello real (OpenSSL) sem SNI, TCP 10.111.0.1:40031 -> 93.184.215.14:443",
         IP(src="10.111.0.1", dst="93.184.215.14") / TCP(sport=40031, dport=443, flags="PA", seq=1, ack=1)
         / Raw(client_hello(None)),
+    ),
+    "tls_client_hello_ech": (
+        "ClientHello real com SNI cloudflare-ech.com e extensão ECH (0xfe0d) acrescentada",
+        IP(src="10.111.0.1", dst="104.16.0.1") / TCP(sport=40032, dport=443, flags="PA", seq=1, ack=1)
+        / Raw(com_ech(client_hello("cloudflare-ech.com"))),
     ),
     # Saídas esperadas do montador (sn_montar_*): mesmos campos fixos que o motor usa
     # (IPv4: id 0, DF, TTL 64; IPv6: hop limit 64; TCP sem opções salvo MSS no SYN-ACK).

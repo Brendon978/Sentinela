@@ -28,6 +28,7 @@ enum {
     SN_FIM_RESET = 1,
     SN_FIM_TEMPO = 2,
     SN_FIM_ERRO = 3,
+    SN_FIM_SESSAO = 4, /* ainda aberto quando a gravação acabou (volume e duração parciais) */
 };
 
 typedef struct sn_fluxo {

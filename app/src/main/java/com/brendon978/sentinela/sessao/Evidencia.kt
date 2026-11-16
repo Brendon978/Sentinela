@@ -1,5 +1,6 @@
 package com.brendon978.sentinela.sessao
 
+import com.brendon978.sentinela.motor.MotivoFim
 import com.brendon978.sentinela.motor.Protocolo
 import com.brendon978.sentinela.vpn.App
 import java.io.File
@@ -17,6 +18,12 @@ object Evidencia {
 
     /** O .sha256 que fica ao lado do .pcap. */
     fun arquivoSha256(caminhoPcap: String) = File(caminhoPcap.removeSuffix(".pcap") + ".sha256")
+
+    /** Lacra a evidência: SHA-256 e contagem do pcap, com o .sha256 escrito ao lado. */
+    fun selar(caminhoPcap: String): Resumo {
+        val pcap = File(caminhoPcap)
+        return resumir(pcap).also { arquivoSha256(caminhoPcap).writeText(linhaSha256(it.sha256, pcap.name)) }
+    }
 
     /**
      * Uma passada só pelo arquivo: tudo o que é lido passa pelo SHA-256, e no caminho os
@@ -83,9 +90,18 @@ data class LinhaFluxo(
     val motivoFim: Int?,
     /** A tela estava desligada quando o fluxo começou (regra de alerta). */
     val telaDesligada: Boolean = false,
+    /** Nota da IA e limiar do app no fim da sessão (null = a IA não julgou esta conexão). */
+    val notaIa: Double? = null,
+    val limiarIa: Double? = null,
 ) {
     /** Nome do app, ou o rótulo de quem não tem app. */
     val rotulo: String get() = rotuloApp ?: App.SEM_APP
+
+    /** Encerrada pelo próprio app ou pela rede, não cortada pelo fim da gravação (volume e duração completos). */
+    val completa: Boolean get() = fimUs != null && motivoFim != MotivoFim.FIM_DA_SESSAO.codigo
+
+    /** A IA julgou e a nota passou do limiar do app. */
+    val acusadaPelaIa: Boolean get() = notaIa != null && limiarIa != null && notaIa > limiarIa
 
     /** "TCP", "UDP" ou "?". */
     val nomeProtocolo: String get() = Protocolo.de(protocolo).rotulo

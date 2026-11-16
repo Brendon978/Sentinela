@@ -125,10 +125,11 @@ enum {
     TLS_HANDSHAKE = 22,
     TLS_CLIENT_HELLO = 1,
     TLS_EXT_SERVER_NAME = 0,
+    TLS_EXT_ECH = 0xfe0d, /* encrypted_client_hello */
     SNI_HOST_NAME = 0,
 };
 
-int sn_tls_sni(const uint8_t *p, size_t n, char *nome, size_t cap) {
+int sn_tls_sni(const uint8_t *p, size_t n, char *nome, size_t cap, int *ech) {
     /* Registro TLS: tipo (1), versão (2), tamanho (2). Depois, a mensagem de handshake:
      * tipo (1), tamanho (3). Decide cedo se é ClientHello, para não esperar à toa. */
     if (n >= 1 && p[0] != TLS_HANDSHAKE)
@@ -164,18 +165,22 @@ int sn_tls_sni(const uint8_t *p, size_t n, char *nome, size_t cap) {
         return SN_ERR_FORMATO;
     i += 2;
 
+    /* Percorre todas as extensões: o SNI pode vir antes ou depois da de ECH. */
+    int achou = 0, tem_ech = 0;
     while (i + 4 <= fim_ext) {
         unsigned tipo = be16(p + i);
         size_t tam = be16(p + i + 2);
         i += 4;
         if (i + tam > fim_ext)
             return SN_ERR_FORMATO;
-        if (tipo == TLS_EXT_SERVER_NAME) {
+        if (tipo == TLS_EXT_ECH)
+            tem_ech = 1;
+        if (tipo == TLS_EXT_SERVER_NAME && !achou) {
             /* lista (2) de entradas: tipo (1), tamanho (2), nome */
             size_t j = i + 2, fim_lista = i + tam;
             if (j > fim_lista || i + 2 + be16(p + i) > fim_lista)
                 return SN_ERR_FORMATO;
-            while (j + 3 <= fim_lista) {
+            while (j + 3 <= fim_lista && !achou) {
                 unsigned tipo_nome = p[j];
                 size_t tam_nome = be16(p + j + 1);
                 j += 3;
@@ -189,13 +194,18 @@ int sn_tls_sni(const uint8_t *p, size_t n, char *nome, size_t cap) {
                     for (size_t k = 0; k < tam_nome; k++)
                         nome[k] = normaliza(p[j + k]);
                     nome[tam_nome] = '\0';
-                    return SN_OK;
+                    achou = 1;
                 }
                 j += tam_nome;
             }
-            return SN_ERR_FORMATO;
+            if (!achou)
+                return SN_ERR_FORMATO;
         }
         i += tam;
     }
-    return SN_ERR_FORMATO;
+    if (!achou)
+        return SN_ERR_FORMATO;
+    if (ech)
+        *ech = tem_ech;
+    return SN_OK;
 }

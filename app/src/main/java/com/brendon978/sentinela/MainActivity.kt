@@ -29,7 +29,11 @@ import com.brendon978.sentinela.motor.Ip
 import com.brendon978.sentinela.motor.Motor
 import com.brendon978.sentinela.motor.Pacote
 import com.brendon978.sentinela.sessao.Alerta
+import com.brendon978.sentinela.sessao.Regra
 import com.brendon978.sentinela.sessao.Evidencia
+import com.brendon978.sentinela.sessao.Exportacao
+import com.brendon978.sentinela.sessao.Relatorio
+import com.brendon978.sentinela.sessao.RelatorioPdf
 import com.brendon978.sentinela.ui.ListaPacotes
 import com.brendon978.sentinela.ui.MAX_PACOTES_TELA
 import kotlinx.coroutines.launch
@@ -50,6 +54,7 @@ import java.io.File
 sealed interface Tela {
     data object Inicio : Tela
     data object AoVivo : Tela
+    data object Rede : Tela
     data class Salva(val sessao: SessaoSalva) : Tela
     data class Detalhe(val linha: LinhaFluxo, val volta: Tela, val caminhoPcap: String?) : Tela
 }
@@ -61,13 +66,75 @@ class MainActivity : ComponentActivity() {
     private val pedirVpn = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) SessaoService.iniciar(this, forcarTcpPendente)
     }
-    private val pedirNotificacao = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    private val pedirPermissoes = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        depoisDasPermissoes?.invoke()
+        depoisDasPermissoes = null
+    }
+    private var depoisDasPermissoes: (() -> Unit)? = null
+
+    /** Rede local (Android 17+) para o mapa e para o repasse do tráfego à LAN; notificações para gravar. */
+    private fun comPermissoes(vararg extra: String, depois: () -> Unit) {
+        val faltam = (listOf(PERMISSAO_REDE_LOCAL) + extra).filter {
+            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (faltam.isEmpty()) return depois()
+        depoisDasPermissoes = depois
+        pedirPermissoes.launch(faltam.toTypedArray())
+    }
 
     private val salvarPcap = registerForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.tcpdump.pcap")) { uri ->
         val s = exportando ?: return@registerForActivityResult
         if (uri != null) copiar(File(s.caminhoPcap), uri)
         salvarSha.launch(Evidencia.arquivoSha256(s.caminhoPcap).name)
     }
+    private enum class Formato { CSV, CSV_ANONIMO, PDF }
+    private var formatoPendente = Formato.CSV
+    private lateinit var banco: Banco
+
+    private val salvarCsv = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        val s = exportando ?: return@registerForActivityResult
+        exportando = null
+        if (uri != null) escreverEm(uri) {
+            val linhas = banco.fluxos(s.id)
+            val anonimo = formatoPendente == Formato.CSV_ANONIMO
+            val sal = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+            it.write(Exportacao.csv(linhas, anonimo, sal).toByteArray())
+        }
+    }
+
+    private val salvarPdf = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        val s = exportando ?: return@registerForActivityResult
+        exportando = null
+        if (uri != null) escreverEm(uri) {
+            val secoes = Relatorio.conteudo(
+                s, banco.fluxos(s.id), banco.alertas(s.id),
+                aparelho = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})",
+                versaoApp = packageManager.getPackageInfo(packageName, 0).versionName ?: "?",
+                fuso = java.time.ZoneId.systemDefault(), geradoEmMs = System.currentTimeMillis(),
+            )
+            RelatorioPdf.escrever(dataHora(s.inicioMs), secoes, it)
+        }
+    }
+
+    /** Gera o arquivo fora da thread principal e grava no destino escolhido pelo usuário. */
+    private fun escreverEm(uri: Uri, gerar: (java.io.OutputStream) -> Unit) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { contentResolver.openOutputStream(uri)?.use(gerar) }
+                .onFailure { android.util.Log.e("Sentinela", "falha ao exportar", it) }
+        }
+    }
+
+    private fun exportar(s: SessaoSalva, formato: Formato?) {
+        exportando = s
+        val base = File(s.caminhoPcap).nameWithoutExtension
+        when (formato) {
+            null -> salvarPcap.launch(File(s.caminhoPcap).name)
+            Formato.CSV -> { formatoPendente = formato; salvarCsv.launch("$base.csv") }
+            Formato.CSV_ANONIMO -> { formatoPendente = formato; salvarCsv.launch("$base-anonimo.csv") }
+            Formato.PDF -> salvarPdf.launch("$base-relatorio.pdf")
+        }
+    }
+
     private val salvarSha = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         val s = exportando ?: return@registerForActivityResult
         exportando = null
@@ -91,27 +158,75 @@ class MainActivity : ComponentActivity() {
         contentResolver.openOutputStream(destino)?.use { saida -> origem.inputStream().use { it.copyTo(saida) } }
     }
 
-    private fun gravar(forcarTcp: Boolean) {
-        pedirNotificacao.launch(Manifest.permission.POST_NOTIFICATIONS)
+    private fun gravar(forcarTcp: Boolean) = comPermissoes(Manifest.permission.POST_NOTIFICATIONS) {
         forcarTcpPendente = forcarTcp
         val pedido = VpnService.prepare(this)
         if (pedido != null) pedirVpn.launch(pedido) else SessaoService.iniciar(this, forcarTcp)
     }
 
+    private companion object {
+        const val PERMISSAO_REDE_LOCAL = "android.permission.ACCESS_LOCAL_NETWORK"
+    }
+
+    override fun onDestroy() {
+        if (::banco.isInitialized) banco.close()
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val banco = Banco(applicationContext)
+        banco = Banco(applicationContext)
+        // Sessão que ficou pela metade (o app morreu gravando) vira "interrompida", com hash.
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { SessaoFinal.recuperar(banco) }
+        }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFB388FF))) {
                 Surface(Modifier.fillMaxSize()) {
                   Box(Modifier.safeDrawingPadding()) {
                     var tela by remember { mutableStateOf<Tela>(Tela.Inicio) }
+                    var escolhendoExportacao by remember { mutableStateOf<SessaoSalva?>(null) }
+                    var aparelhos by remember { mutableStateOf<List<com.brendon978.sentinela.rede.Aparelho>?>(null) }
+                    var statusRede by remember { mutableStateOf<String?>(null) }
+                    var varrendo by remember { mutableStateOf(false) }
                     var forcarTcp by remember { mutableStateOf(false) }
                     val estado by SessaoAtual.estado.collectAsState()
                     val versao by SessaoFinal.versao.collectAsState()
                     var sessoes by remember { mutableStateOf(emptyList<SessaoSalva>()) }
+                    var excecoes by remember { mutableStateOf(emptySet<Pair<String?, Regra>>()) }
                     LaunchedEffect(versao) { sessoes = withContext(Dispatchers.IO) { banco.sessoes() } }
+                    LaunchedEffect(Unit) { excecoes = withContext(Dispatchers.IO) { banco.excecoes() } }
+                    fun mudarExcecao(e: Pair<String?, Regra>, ignorar: Boolean) = lifecycleScope.launch(Dispatchers.IO) {
+                        if (ignorar) banco.adicionarExcecao(e.first, e.second) else banco.removerExcecao(e.first, e.second)
+                        val novas = banco.excecoes()
+                        SessaoAtual.trocarExcecoes(novas)
+                        excecoes = novas
+                    }
 
+                    escolhendoExportacao?.let { s ->
+                        androidx.compose.material3.AlertDialog(
+                            onDismissRequest = { escolhendoExportacao = null },
+                            title = { androidx.compose.material3.Text("Exportar sessão") },
+                            text = {
+                                androidx.compose.foundation.layout.Column {
+                                    listOf(
+                                        "Captura (.pcap + .sha256)" to null, "Conexões em CSV" to Formato.CSV,
+                                        "Conexões em CSV anonimizado" to Formato.CSV_ANONIMO, "Relatório em PDF" to Formato.PDF,
+                                    ).forEach { (rotulo, f) ->
+                                        androidx.compose.material3.TextButton(onClick = { escolhendoExportacao = null; exportar(s, f) }) {
+                                            androidx.compose.material3.Text(rotulo)
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {},
+                            dismissButton = {
+                                androidx.compose.material3.TextButton(onClick = { escolhendoExportacao = null }) {
+                                    androidx.compose.material3.Text("Cancelar")
+                                }
+                            },
+                        )
+                    }
                     BackHandler(tela != Tela.Inicio) {
                         tela = when (val t = tela) { is Tela.Detalhe -> t.volta; else -> Tela.Inicio }
                     }
@@ -121,15 +236,28 @@ class MainActivity : ComponentActivity() {
                             aoGravar = { gravar(forcarTcp) },
                             aoParar = { SessaoService.parar(this@MainActivity) },
                             aoAbrirAoVivo = { tela = Tela.AoVivo },
+                            aoAbrirRede = { tela = Tela.Rede },
                             aoAbrirSessao = { tela = Tela.Salva(it) },
-                            aoExportar = { s ->
-                                exportando = s
-                                salvarPcap.launch(File(s.caminhoPcap).name)
-                            },
+                            aoExportar = { s -> escolhendoExportacao = s },
                             aoApagar = { s -> lifecycleScope.launch(Dispatchers.IO) { SessaoFinal.apagar(banco, s) } },
+                            excecoes = excecoes,
+                            aoDesfazerExcecao = { mudarExcecao(it, ignorar = false) },
                         )
+                        Tela.Rede -> com.brendon978.sentinela.ui.TelaRede(aparelhos, statusRede, varrendo, { tela = Tela.Inicio }) {
+                          comPermissoes {
+                            varrendo = true
+                            statusRede = "Começando…"
+                            lifecycleScope.launch {
+                                runCatching { com.brendon978.sentinela.rede.Varredor(this@MainActivity).mapear { statusRede = it } }
+                                    .onSuccess { aparelhos = it; statusRede = "${it.size} aparelhos encontrados" }
+                                    .onFailure { statusRede = it.message ?: "Falhou: $it" }
+                                varrendo = false
+                            }
+                          }
+                        }
                         Tela.AoVivo -> TelaConexoes(
                             "Ao vivo", estado.linhas, estado.alertas, { tela = Tela.Inicio },
+                            aoIgnorar = { mudarExcecao(it.pacote to it.regra, ignorar = true) },
                         ) { tela = Tela.Detalhe(it, Tela.AoVivo, estado.caminhoPcap) }
                         is Tela.Salva -> {
                             var linhas by remember(t) { mutableStateOf(emptyList<LinhaFluxo>()) }
@@ -140,7 +268,10 @@ class MainActivity : ComponentActivity() {
                                     alertas = banco.alertas(t.sessao.id)
                                 }
                             }
-                            TelaConexoes(dataHora(t.sessao.inicioMs), linhas, alertas, { tela = Tela.Inicio }) {
+                            TelaConexoes(
+                                dataHora(t.sessao.inicioMs), linhas, alertas.filter { (it.pacote to it.regra) !in excecoes },
+                                { tela = Tela.Inicio }, aoIgnorar = { mudarExcecao(it.pacote to it.regra, ignorar = true) },
+                            ) {
                                 tela = Tela.Detalhe(it, t, t.sessao.caminhoPcap)
                             }
                         }

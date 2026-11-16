@@ -3,7 +3,9 @@ package com.brendon978.sentinela.ui
 import android.graphics.drawable.Drawable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
@@ -45,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.foundation.rememberScrollState
+import com.brendon978.sentinela.dados.EstadoSessaoSalva
 import com.brendon978.sentinela.dados.SessaoSalva
 import com.brendon978.sentinela.motor.Pacote
 import com.brendon978.sentinela.sessao.Alerta
@@ -71,9 +75,12 @@ fun TelaInicio(
     aoGravar: () -> Unit,
     aoParar: () -> Unit,
     aoAbrirAoVivo: () -> Unit,
+    aoAbrirRede: () -> Unit,
     aoAbrirSessao: (SessaoSalva) -> Unit,
     aoExportar: (SessaoSalva) -> Unit,
     aoApagar: (SessaoSalva) -> Unit,
+    excecoes: Set<Pair<String?, com.brendon978.sentinela.sessao.Regra>> = emptySet(),
+    aoDesfazerExcecao: (Pair<String?, com.brendon978.sentinela.sessao.Regra>) -> Unit = {},
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -109,16 +116,36 @@ fun TelaInicio(
                 }
             }
         }
+        if (excecoes.isNotEmpty()) {
+            item { Text("Alertas ignorados", style = MaterialTheme.typography.titleMedium) }
+            items(excecoes.toList()) { e ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(e.second.titulo, style = MaterialTheme.typography.bodyMedium)
+                        Text(e.first ?: com.brendon978.sentinela.vpn.App.SEM_APP, style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = { aoDesfazerExcecao(e) }) { Text("Desfazer") }
+                }
+            }
+        }
+        item { OutlinedButton(onClick = aoAbrirRede, modifier = Modifier.fillMaxWidth()) { Text("Mapa da rede Wi-Fi") } }
         item { Text("Sessões salvas", style = MaterialTheme.typography.titleMedium) }
         if (sessoes.isEmpty()) item { Text("Nenhuma ainda.", style = MaterialTheme.typography.bodySmall) }
         items(sessoes, key = { it.id }) { s ->
             Card(Modifier.fillMaxWidth().clickable { aoAbrirSessao(s) }) {
                 Column(Modifier.padding(12.dp)) {
-                    Text(dataHora(s.inicioMs), fontWeight = FontWeight.SemiBold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(dataHora(s.inicioMs), fontWeight = FontWeight.SemiBold)
+                        when (s.estado) {
+                            EstadoSessaoSalva.GRAVANDO -> Selo("gravando")
+                            EstadoSessaoSalva.INTERROMPIDA -> Selo("interrompida")
+                            EstadoSessaoSalva.CONCLUIDA -> {}
+                        }
+                    }
                     val duracao = (s.fimMs - s.inicioMs) / 1000
                     Text("${duracao / 60} min ${duracao % 60} s · ${s.pacotes} pacotes · ${Lista.bytes(s.bytes)}")
                     Text("SHA-256 ${s.sha256.take(16)}…", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                    Row {
+                    if (s.estado != EstadoSessaoSalva.GRAVANDO) Row { // gravando: o arquivo ainda está aberto
                         TextButton(onClick = { aoExportar(s) }) { Text("Exportar") }
                         TextButton(onClick = { aoApagar(s) }) { Text("Apagar") }
                     }
@@ -142,15 +169,27 @@ private fun Aviso(texto: String) {
 enum class Aba(val titulo: String) { CONEXOES("Conexões"), POR_APP("Por app"), ALERTAS("Alertas") }
 
 /** Uma sessão (ao vivo ou salva): conexões, resumo por app e alertas. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TelaConexoes(
     titulo: String,
     linhas: List<LinhaFluxo>,
     alertas: List<Alerta>,
     aoVoltar: () -> Unit,
+    aoIgnorar: (Alerta) -> Unit = {},
     aoAbrir: (LinhaFluxo) -> Unit,
 ) {
     var aba by remember { mutableStateOf(Aba.CONEXOES) }
+    var perguntaIgnorar by remember { mutableStateOf<Alerta?>(null) }
+    perguntaIgnorar?.let { a ->
+        AlertDialog(
+            onDismissRequest = { perguntaIgnorar = null },
+            title = { Text("Ignorar este alerta?") },
+            text = { Text("Não avisar mais \"${a.regra.titulo}\" para ${a.rotulo}. Dá para desfazer na tela inicial.") },
+            confirmButton = { TextButton(onClick = { aoIgnorar(a); perguntaIgnorar = null }) { Text("Ignorar") } },
+            dismissButton = { TextButton(onClick = { perguntaIgnorar = null }) { Text("Cancelar") } },
+        )
+    }
     var texto by remember { mutableStateOf("") }
     var pacote by remember { mutableStateOf<String?>(null) }
     val filtradas = remember(linhas, texto, pacote) { Lista.filtrar(linhas, texto, pacote) }
@@ -185,7 +224,7 @@ fun TelaConexoes(
             Aba.POR_APP -> {
                 val resumo = remember(linhas) { PorApp.resumir(linhas) }
                 LazyColumn(Modifier.padding(top = 8.dp)) {
-                    items(resumo, key = { it.pacote ?: "" }) { r ->
+                    items(resumo, key = { it.chave }) { r ->
                         LinhaApp(r, Modifier.clickable { pacote = r.pacote; aba = Aba.CONEXOES })
                         HorizontalDivider()
                     }
@@ -196,8 +235,10 @@ fun TelaConexoes(
                 LazyColumn(Modifier.padding(top = 8.dp)) {
                     items(alertas) { a ->
                         Column(
-                            Modifier.fillMaxWidth().padding(vertical = 6.dp)
-                                .clickable { linhas.firstOrNull { it.fluxoId == a.fluxoId }?.let(aoAbrir) },
+                            Modifier.fillMaxWidth().padding(vertical = 6.dp).combinedClickable(
+                                onClick = { linhas.firstOrNull { it.fluxoId == a.fluxoId }?.let(aoAbrir) },
+                                onLongClick = { perguntaIgnorar = a },
+                            ),
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconeApp(a.pacote)
@@ -248,7 +289,9 @@ private fun LinhaConexao(l: LinhaFluxo, modifier: Modifier = Modifier) {
             Text(l.rotulo, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(l.dominio ?: l.ipDestino, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
-                if (l.dominio != null) Selo(if (l.origemDominio == "SNI") "SNI" else "DNS")
+                if (l.dominio != null) Selo(
+                    when (l.origemDominio) { "SNI" -> "SNI"; "SNI_ECH" -> "SNI·ECH"; else -> "DNS" }
+                )
             }
             Text(
                 "${l.nomeProtocolo} ${l.ipDestino}:${l.portaDestino}" + if (l.fimUs != null) " · encerrada" else "",
@@ -355,3 +398,61 @@ fun ListaPacotes(pacotes: List<Pair<Pacote, String>>?) {
 }
 
 const val MAX_PACOTES_TELA = 200
+
+// ---------------------------------------------------------------- mapa da rede (v1.1)
+
+@Composable
+fun TelaRede(
+    aparelhos: List<com.brendon978.sentinela.rede.Aparelho>?,
+    status: String?,
+    varrendo: Boolean,
+    aoVoltar: () -> Unit,
+    aoMapear: () -> Unit,
+) {
+    var confirmando by remember { mutableStateOf(false) }
+    if (confirmando) {
+        AlertDialog(
+            onDismissRequest = { confirmando = false },
+            title = { Text("Mapear esta rede?") },
+            text = {
+                Text(
+                    "Só faça isso na sua rede ou com autorização do dono. Varrer aparelhos de uma rede " +
+                        "alheia pode ser crime (Lei 12.737/2012).",
+                )
+            },
+            confirmButton = { TextButton(onClick = { confirmando = false; aoMapear() }) { Text("É minha / tenho autorização") } },
+            dismissButton = { TextButton(onClick = { confirmando = false }) { Text("Cancelar") } },
+        )
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = aoVoltar) { Text("← Voltar") }
+                Text("Mapa da rede", style = MaterialTheme.typography.titleMedium)
+            }
+            Text(
+                "Aparelhos do Wi-Fi atual, pelo que eles anunciam (mDNS, SSDP) e por algumas portas abertas.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onClick = { confirmando = true }, enabled = !varrendo, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                Text(if (varrendo) "Mapeando…" else "Mapear")
+            }
+            status?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp)) }
+        }
+        items(aparelhos.orEmpty(), key = { it.ip }) { a ->
+            val tipo = com.brendon978.sentinela.rede.Classificador.tipo(a)
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp)) {
+                    Row {
+                        Text(tipo.nome, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        Text(a.ip, fontFamily = FontFamily.Monospace)
+                    }
+                    if (a.nomes.isNotEmpty()) Text(a.nomes.joinToString(", "))
+                    if (a.servicos.isNotEmpty()) Text("Anuncia: ${a.servicos.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
+                    if (a.portas.isNotEmpty()) Text("Portas abertas: ${a.portas.sorted().joinToString(", ")}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    a.servidor?.let { Text("UPnP: $it", style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        }
+    }
+}

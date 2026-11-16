@@ -66,3 +66,51 @@ Data: 2026-11-16. Plano: `docs/superpowers/plans/2026-11-13-sentinela-v1.md`.
   do artigo.
 - Exportar a sessão já anonimizada (IPs, nomes de aparelho), para usar dados de amigos no artigo.
 - Sensor no PC/notebook com o mesmo motor em C (é Linux), em laboratório virtual.
+
+---
+
+# v1.1 (celular) — 2026-11-16
+
+Plano: `docs/superpowers/plans/2026-11-16-sentinela-v1.1-mobile.md`.
+
+| | Entregue | Prova |
+|---|---|---|
+| M1 | Ícone adaptativo a partir de `arte/Sentinela_icon.jpeg` | gaveta de apps no aparelho |
+| M2 | Sessão criada no início, gravada a cada 5 s, recuperada como "interrompida" se o app morrer | `force-stop` no meio: sessão volta com hash, 589 pacotes e 58 conexões |
+| M3 | SNI marcado quando o ClientHello usa ECH (`SNI·ECH`) | fixture com ECH conferida no tshark |
+| M4 | Ignorar uma regra para um app (toque longo), com "Desfazer" | aparelho: 3 alertas → 2 |
+| M5 | CSV das conexões, normal e anonimizado (HMAC com sal por exportação) | aparelho: 504 linhas; nenhum IP/domínio real (achado e corrigido: IP do Wi-Fi como origem no QUIC) |
+| M6 | Relatório em PDF (identificação, integridade, cadeia de custódia, por app, alertas, domínios) | aparelho + `pdftotext` |
+| M7 | Mapa da rede (mDNS, SSDP, portas), com aviso de rede autorizada; pede `ACCESS_LOCAL_NETWORK` (Android 17) | funcionou depois da permissão (antes, `EPERM`) |
+| M8 | IA de linha de base por app (Isolation Forest) e alerta "Comportamento fora do padrão" com o motivo | aparelho: 250 conexões julgadas, 7 acima do limiar (2,8%) |
+
+## IA — decisões de método (para o artigo)
+
+Revisão independente com experimento + testes no aparelho levaram a estas escolhas:
+
+1. **Atributos.** Contínuos na floresta: log do volume enviado/recebido, log de pacotes, log da
+   duração, hora como seno/cosseno (23h fica perto de 0h). Categóricos fora da floresta: porta e
+   estado da tela entram como frequência no histórico do app e só contam quando **nunca** foram
+   vistos (porta minoritária mas conhecida dava 14% de alarme falso dentro da floresta).
+2. **Novidade.** O Isolation Forest original não separa um ponto novo além da faixa conhecida (ele
+   vira "borda"). A checagem de faixa entra **só na raiz**, com folga proporcional e **piso por
+   atributo** (≈4,5× no volume, ≈2 h no horário). Aplicada em todo nó, inflava o alarme falso a 20%;
+   sem piso, um histórico de 1 minuto acusava tudo uma hora depois.
+3. **Histórico.** Só conexões encerradas de sessões concluídas, sem as que a própria IA já acusou;
+   mínimo de 100 conexões **e** 3 sessões por app. Atributo quase constante no histórico fica fora
+   da floresta.
+4. **Limiar.** p99 das notas num pedaço do histórico (20%) que o modelo não viu, com piso 0,6.
+5. **Julgamento.** Só conexões encerradas (volume e duração completos). Nota e limiar de cada
+   conexão ficam no banco e no CSV (`nota_ia`, `limiar_ia`) para calcular precisão, recall e taxa
+   de falso positivo; a sessão registra quantos apps tinham modelo (`ia_apps`).
+6. **Motivo.** Vem do modelo: atributo do corte que isolou o ponto (voto das árvores) ou o atributo
+   novo na raiz.
+
+Medido com dados sintéticos (testes): alarme falso < 4% com o histórico mínimo; porta nunca usada e
+tela desligada pela primeira vez detectadas em > 90%.
+
+## Limitações novas
+
+- O mapa da rede não vê aparelhos que não anunciam nada e não têm nenhuma das portas testadas.
+- Nos dados móveis não há mapa: não existem vizinhos na rede local.
+- A IA só julga apps com histórico suficiente; nas primeiras sessões, só as regras fixas valem.

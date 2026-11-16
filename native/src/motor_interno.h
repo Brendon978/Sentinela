@@ -68,7 +68,7 @@ void sn_ev_fluxo_novo(sn_motor *m, const sn_fluxo *f);
 void sn_ev_bytes(sn_motor *m, const sn_fluxo *f);
 void sn_ev_fim(sn_motor *m, const sn_fluxo *f, uint64_t fim_us, uint8_t motivo);
 void sn_ev_dns(sn_motor *m, const sn_dns_resposta *r);
-void sn_ev_sni(sn_motor *m, const sn_fluxo *f, const char *nome);
+void sn_ev_sni(sn_motor *m, const sn_fluxo *f, const char *nome, int ech);
 
 /* Soquete não bloqueante conectado a um servidor. -1 em erro. `tipo` = SOCK_DGRAM ou SOCK_STREAM.
  * Para TCP, o connect fica em andamento (EINPROGRESS) e termina quando o socket fica gravável. */

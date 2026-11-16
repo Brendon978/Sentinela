@@ -288,11 +288,18 @@ int sn_motor_rodar(sn_motor *m, int fd_tun) {
     return ret;
 }
 
+/* No fim da gravação, quem ainda estava aberto sai com SN_FIM_SESSAO: o volume e a duração são
+ * parciais (o app não fechou a conexão; quem cortou foi o Parar). */
+static void saida_fim_de_sessao(void *ctx, sn_fluxo *f, uint8_t motivo) {
+    (void)motivo;
+    saida(ctx, f, SN_FIM_SESSAO);
+}
+
 void sn_motor_encerrar(sn_motor *m) {
     if (m->encerrado)
         return;
     m->encerrado = 1;
-    sn_fluxos_destruir(m->fluxos, saida, m);
+    sn_fluxos_destruir(m->fluxos, saida_fim_de_sessao, m);
     m->fluxos = NULL;
     sn_pcap_fechar(m->pcap);
     m->pcap = NULL;

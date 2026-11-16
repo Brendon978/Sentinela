@@ -31,9 +31,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -58,7 +61,6 @@ class SessaoService : VpnService() {
         private const val NOTIFICACAO = 1
         private const val CANAL_ALERTAS = "alertas"
         private const val NOTIFICACAO_ALERTAS = 2
-        private val DNS_VIRTUAIS = arrayOf("10.111.0.53", "fd00:5e:1::53")
 
         fun iniciar(ctx: Context, forcarTcp: Boolean) {
             ctx.startForegroundService(
@@ -128,13 +130,13 @@ class SessaoService : VpnService() {
             Builder().apply {
                 setSession("Sentinela")
                 setMtu(1500)
-                addAddress("10.111.0.1", 32)
+                addAddress(Tun.ENDERECO_V4, 32)
                 addRoute("0.0.0.0", 0)
-                addDnsServer(DNS_VIRTUAIS[0])
+                addDnsServer(Tun.DNS_VIRTUAIS[0])
                 if (temIpv6) {
-                    addAddress("fd00:5e:1::1", 128)
+                    addAddress(Tun.ENDERECO_V6, 128)
                     addRoute("::", 0)
-                    addDnsServer(DNS_VIRTUAIS[1])
+                    addDnsServer(Tun.DNS_VIRTUAIS[1])
                 }
                 addDisallowedApplication(packageName)
             }.establish()
@@ -143,7 +145,7 @@ class SessaoService : VpnService() {
             null
         } ?: return falha("O Android não autorizou a VPN.")
 
-        val h = Motor.criar(pcap.absolutePath, DNS_VIRTUAIS, dnsReais.toTypedArray(), forcarTcp)
+        val h = Motor.criar(pcap.absolutePath, Tun.DNS_VIRTUAIS, dnsReais.toTypedArray(), forcarTcp)
         if (h == 0L) {
             pfd.close()
             return falha("O motor não iniciou (não abriu o arquivo da captura).")
@@ -157,25 +159,46 @@ class SessaoService : VpnService() {
                     packageManager.getApplicationLabel(packageManager.getApplicationInfo(pacote, PackageManager.ApplicationInfoFlags.of(0))).toString()
                 }.getOrNull()
             },
-            DNS_VIRTUAIS.map { Ip(if (':' in it) 6 else 4, InetAddress.getByName(it).address) }.toSet(),
+            Tun.DNS_VIRTUAIS.map { Ip(if (':' in it) 6 else 4, InetAddress.getByName(it).address) }.toSet(),
         )
-        val vistos = runCatching { Banco(this).use { it.dominiosVistos() } }.getOrDefault(emptySet())
-        val contexto = Alertas.Contexto(ZoneId.systemDefault(), vistos, DNS_VIRTUAIS.toSet() + dnsReais)
+        val banco = Banco(this).also { this.banco = it }
+        val vistos = runCatching { banco.dominiosVistos() }.getOrDefault(emptySet())
+        val sessaoId = banco.abrirSessao(inicioMs, pcap.absolutePath).also { SessaoFinal.usando(it) }
+        val excecoes = runCatching { banco.excecoes() }.getOrDefault(emptySet())
+        val contexto = Alertas.Contexto(ZoneId.systemDefault(), vistos, Tun.DNS_VIRTUAIS.toSet() + dnsReais, excecoes)
         // Estado real da tela no início (não o que sobrou da sessão anterior).
         EstadoTela.ligada = getSystemService(PowerManager::class.java).isInteractive
         SessaoAtual.iniciar(
-            inicioMs, pcap.absolutePath, lp?.isPrivateDnsActive == true, contexto, { EstadoTela.ligada }, dono::dono,
+            sessaoId, inicioMs, pcap.absolutePath, lp?.isPrivateDnsActive == true, contexto, { EstadoTela.ligada }, dono::dono,
         )
         observarTela()
 
         // A leitura nasce antes da thread do motor: se o motor falhar na hora, a parada já a acha.
         leitura = escopo.launch {
+            var ultimaGravacao = System.currentTimeMillis()
+            var gravado: com.brendon978.sentinela.sessao.EstadoSessao? = null
             while (isActive) {
                 delay(100) // curto: o dono da conexão só é achado enquanto ela existe
                 drenar()
+                val agora = System.currentTimeMillis()
+                if (agora - ultimaGravacao >= 5000) { // a cada 5 s a lista vai para o banco
+                    ultimaGravacao = agora
+                    val e = SessaoAtual.estado.value
+                    if (e !== gravado) // nada mudou em 5 s (o estado é imutável): não regrava
+                        runCatching { banco.gravarParcial(sessaoId, e.linhas, e.alertas, agora, e.eventosPerdidos) }
+                            .onSuccess { gravado = e }
+                            .onFailure { Log.e(TAG, "falha ao gravar a sessão em andamento", it) }
+                }
             }
         }
         observarRede(cm)
+        // IA: treina o normal de cada app com as sessões anteriores, sem segurar o início
+        treino = escopo.launch { // Default: o treino é conta; só a leitura do banco é E/S
+            runCatching {
+                val historico = withContext(Dispatchers.IO) { banco.historico() }
+                SessaoAtual.definirLinhaDeBase(com.brendon978.sentinela.ia.LinhaDeBase.treinar(historico, ZoneId.systemDefault()))
+            }.onFailure { Log.w(TAG, "IA sem linha de base", it) }
+        }
         synchronized(cadeado) {
             handle = h
             alertasAvisados = 0
@@ -191,6 +214,8 @@ class SessaoService : VpnService() {
     }
 
     private var observadorRede: ConnectivityManager.NetworkCallback? = null
+    private var banco: Banco? = null
+    private var treino: Job? = null
 
     /** A rede real mudou (ex.: Wi-Fi -> dados): o motor passa a usar o DNS da rede nova. */
     private fun observarRede(cm: ConnectivityManager) {
@@ -202,7 +227,7 @@ class SessaoService : VpnService() {
                 val dns = dnsDe(cm.getLinkProperties(real))
                 if (dns.isEmpty()) return
                 synchronized(cadeado) { if (handle != 0L) Motor.trocarDns(handle, dns.toTypedArray()) }
-                SessaoAtual.trocarDnsNormais(DNS_VIRTUAIS.toSet() + dns)
+                SessaoAtual.trocarDnsNormais(Tun.DNS_VIRTUAIS.toSet() + dns)
             }
         }
         val pedido = NetworkRequest.Builder()
@@ -299,7 +324,9 @@ class SessaoService : VpnService() {
             threadMotor = null
         }
         try {
-            leitura?.cancel()
+            // espera a leitura acabar: a gravação de 5 s não pode correr junto com o fechamento;
+            // o treino da IA desta sessão também para (não pode cair na próxima)
+            runBlocking { leitura?.cancelAndJoin(); treino?.cancelAndJoin() }
             Motor.parar(h)
             t?.join(10_000)
             if (t?.isAlive == true) {
@@ -318,6 +345,8 @@ class SessaoService : VpnService() {
                 runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(cb) }
             }
             observadorRede = null
+            banco?.close()
+            banco = null
         } finally {
             synchronized(cadeado) { parando = false }
             encerrarServico()

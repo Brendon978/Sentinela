@@ -331,8 +331,12 @@ TESTE(tcp_sni_em_dois_segmentos) {
     uint16_t tam;
     const uint8_t *ev = banca_evento(&b, SN_EV_SNI, &de, &tam, BANCA_TETO_MS);
     char nome[64] = {0};
-    if (ev && tam >= 6 && le16_ev(ev + 4) < sizeof nome)
+    int ech = -1;
+    if (ev && tam >= 6 && le16_ev(ev + 4) < sizeof nome) {
         memcpy(nome, ev + 6, le16_ev(ev + 4));
+        if (tam == 6 + le16_ev(ev + 4) + 1)
+            ech = ev[6 + le16_ev(ev + 4)];
+    }
     cli_fin(&b, &cli);
     cli_receber(&b, &cli, 0);
     banca_fim(&b);
@@ -341,6 +345,7 @@ TESTE(tcp_sni_em_dois_segmentos) {
     CONFERE(ok);
     CONFERE(ev != NULL);
     CONFERE(strcmp(nome, "www.exemplo.com.br") == 0);
+    CONFERE_IGUAL_INT(ech, 0); /* byte de ECH presente e zerado (ClientHello sem ECH) */
 }
 
 TESTE(tcp_dns_virtual_vai_ao_dns_real) {

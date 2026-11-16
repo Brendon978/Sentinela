@@ -89,6 +89,16 @@ class EventosTest {
     }
 
     @Test
+    fun `sni com a marca de ech e sni antigo sem o byte`() {
+        val novo = Corpo().u32(3).u16(18).texto("cloudflare-ech.com").u8(1).bytes()
+        val antigo = Corpo().u32(4).u16(5).texto("a.com").bytes()
+        val lote = Eventos.decodificar(Lote().registro(5, novo).registro(5, antigo).bytes())
+        assertNull(lote.erro)
+        assertEquals(Evento.Sni(3, "cloudflare-ech.com", ech = true), lote.eventos[0])
+        assertEquals(Evento.Sni(4, "a.com", ech = false), lote.eventos[1])
+    }
+
+    @Test
     fun `perda e tipo desconhecido pulado`() {
         val lote = Eventos.decodificar(
             Lote().registro(99, byteArrayOf(1, 2, 3)).registro(6, Corpo().u32(12).bytes()).bytes()
