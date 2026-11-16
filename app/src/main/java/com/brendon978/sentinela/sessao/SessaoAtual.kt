@@ -84,12 +84,18 @@ object SessaoAtual {
         eventos.forEach(a::aplicar)
         val linhas = Lista.aoVivo(a.conexoes.values)
         // As regras só olham app, domínio, destino, porta e horário de início: bytes e fins de
-        // fluxo (a maioria dos lotes) não mudam os alertas.
-        val mudaAlertas = eventos.any {
-            it is Evento.FluxoNovo || it is Evento.Sni || it is Evento.Dns ||
-                (it is Evento.FluxoFim && contexto?.linhaDeBase != null) // a IA julga quem acabou de terminar
+        // fluxo (a maioria dos lotes) não mudam os alertas. Fim de fluxo só interessa à IA, que
+        // julga apenas as conexões que acabaram de terminar.
+        val c = contexto
+        val alertas = when {
+            c == null -> emptyList()
+            eventos.any { it is Evento.FluxoNovo || it is Evento.Sni || it is Evento.Dns } -> Alertas.avaliar(linhas, c)
+            c.linhaDeBase != null && eventos.any { it is Evento.FluxoFim } -> {
+                val terminaram = eventos.mapNotNullTo(HashSet()) { (it as? Evento.FluxoFim)?.id }
+                Alertas.acrescentarAnomalias(_estado.value.alertas, linhas.filter { it.fluxoId in terminaram }, c)
+            }
+            else -> _estado.value.alertas
         }
-        val alertas = if (mudaAlertas) contexto?.let { Alertas.avaliar(linhas, it) }.orEmpty() else _estado.value.alertas
         _estado.value = _estado.value.copy(linhas = linhas, eventosPerdidos = a.eventosPerdidos, alertas = alertas)
     }
 

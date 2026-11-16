@@ -1,6 +1,6 @@
 /* O laço do motor: lê pacotes dos apps no tun, entrega a cada relé, acorda com as
  * respostas dos sockets reais e, uma vez por segundo, publica bytes e expira fluxos.
- * Contrato em include/sentinela.h; aula 05 (sockets, poll, TUN).
+ * Contrato em include/sentinela.h; aula 05 (sockets, poll/epoll, TUN).
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -19,7 +20,8 @@
 enum {
     TIQUE_US = 1000000,       /* publica bytes e expira a cada 1 s */
     POLL_MS = 250,            /* o laço acorda pelo menos 4 vezes por segundo */
-    MAX_LIDOS_POR_VOLTA = 256 /* não deixa o tun monopolizar o laço */
+    MAX_LIDOS_POR_VOLTA = 256, /* não deixa o tun monopolizar o laço */
+    MAX_EVENTOS = 256          /* prontos tratados por volta (o resto fica para a próxima) */
 };
 
 static uint64_t relogio_sistema(clockid_t qual) {
@@ -43,6 +45,9 @@ sn_fluxo *sn_novo_fluxo(sn_motor *m, const sn_tupla *k, sn_tempo agora) {
     return f;
 }
 
+/* Endereços que marcam, no epoll, quem não é fluxo. */
+static char MARCA_PARAR, MARCA_TUN;
+
 static int limita(int n, int max) { return n < 0 ? 0 : n > max ? max : n; }
 
 static void nao_bloqueante(int fd) {
@@ -62,8 +67,12 @@ sn_motor *sn_motor_criar(const sn_config *c) {
     m->fd_tun = -1;
     pthread_mutex_init(&m->mu_dns, NULL);
     m->fd_parar = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    m->fd_epoll = epoll_create1(EPOLL_CLOEXEC);
     m->fluxos = sn_fluxos_criar();
-    if (m->fd_parar < 0 || !m->fluxos || sn_fila_iniciar(&m->fila) != 0)
+    if (m->fd_parar < 0 || m->fd_epoll < 0 || !m->fluxos || sn_fila_iniciar(&m->fila) != 0)
+        goto falha;
+    struct epoll_event ev = {.events = EPOLLIN, .data.ptr = &MARCA_PARAR};
+    if (epoll_ctl(m->fd_epoll, EPOLL_CTL_ADD, m->fd_parar, &ev) != 0)
         goto falha;
     if (c->caminho_pcap && !(m->pcap = sn_pcap_abrir(c->caminho_pcap)))
         goto falha;
@@ -71,6 +80,8 @@ sn_motor *sn_motor_criar(const sn_config *c) {
 falha:
     if (m->fd_parar >= 0)
         close(m->fd_parar);
+    if (m->fd_epoll >= 0)
+        close(m->fd_epoll);
     sn_fluxos_destruir(m->fluxos, NULL, NULL);
     pthread_mutex_destroy(&m->mu_dns);
     free(m);
@@ -195,74 +206,89 @@ static void pacote_do_app(sn_motor *m, const uint8_t *p, size_t n, sn_tempo agor
 
 /* ---------------------------------------------------------------- o laço */
 
-typedef struct {
-    struct pollfd *pf;
-    sn_fluxo **fl;
-    size_t n, cap;
-} conjunto;
-
-static int conjunto_por(conjunto *c, int fd, short ev, sn_fluxo *f) {
-    if (c->n == c->cap) {
-        size_t novo = c->cap ? c->cap * 2 : 64;
-        struct pollfd *pf = realloc(c->pf, novo * sizeof *pf);
-        if (!pf)
-            return -1;
-        c->pf = pf;
-        sn_fluxo **fl = realloc(c->fl, novo * sizeof *fl);
-        if (!fl)
-            return -1;
-        c->fl = fl;
-        c->cap = novo;
-    }
-    c->pf[c->n] = (struct pollfd){.fd = fd, .events = ev};
-    c->fl[c->n] = f;
-    c->n++;
-    return 0;
+/* POLLIN/POLLOUT (o que os relés falam) <-> EPOLLIN/EPOLLOUT (o que o kernel fala). */
+static uint32_t para_epoll(short ev) {
+    return (ev & POLLIN ? EPOLLIN : 0u) | (ev & POLLOUT ? EPOLLOUT : 0u);
 }
 
-static void junta_fluxo(void *ctx, sn_fluxo *f) {
+static short de_epoll(uint32_t ev) {
+    return (short)((ev & EPOLLIN ? POLLIN : 0) | (ev & EPOLLOUT ? POLLOUT : 0) |
+                   (ev & EPOLLERR ? POLLERR : 0) | (ev & EPOLLHUP ? POLLHUP : 0));
+}
+
+/* Deixa o epoll igual ao que o relé quer, mexendo no kernel só no que mudou. Fluxo com fd
+ * fechado já saiu do epoll no close (e o número pode estar com outro socket): nada de DEL. */
+static void sincroniza(void *ctx, sn_fluxo *f) {
+    sn_motor *m = ctx;
     sn_estado *e = f->estado;
-    if (e && e->fd >= 0 && e->eventos)
-        conjunto_por(ctx, e->fd, e->eventos, f);
+    if (!e)
+        return;
+    if (e->registrado && e->fd_registrado != e->fd)
+        e->registrado = 0;
+    short quer = e->fd >= 0 ? e->eventos : 0;
+    if (!quer) {
+        /* sem interesse: sai do epoll, senão ERR/HUP ainda acordariam o relé */
+        if (e->registrado)
+            epoll_ctl(m->fd_epoll, EPOLL_CTL_DEL, e->fd, NULL);
+        e->registrado = 0;
+        return;
+    }
+    if (e->registrado && e->eventos_registrados == quer)
+        return;
+    struct epoll_event ev = {.events = para_epoll(quer), .data.ptr = f};
+    if (epoll_ctl(m->fd_epoll, e->registrado ? EPOLL_CTL_MOD : EPOLL_CTL_ADD, e->fd, &ev) == 0) {
+        e->registrado = 1;
+        e->fd_registrado = e->fd;
+        e->eventos_registrados = quer;
+    }
 }
 
 int sn_motor_rodar(sn_motor *m, int fd_tun) {
     m->fd_tun = fd_tun;
     nao_bloqueante(fd_tun);
     m->ultimo_tique = sn_agora(m).mono;
-    conjunto c = {0};
+    struct epoll_event ev_tun = {.events = EPOLLIN, .data.ptr = &MARCA_TUN};
+    if (epoll_ctl(m->fd_epoll, EPOLL_CTL_ADD, fd_tun, &ev_tun) != 0)
+        return -1;
+    struct epoll_event prontos[MAX_EVENTOS];
     int ret = 0;
     for (;;) {
-        tique(m, sn_agora(m)); /* expira antes de montar o conjunto: ponteiros seguros */
-        c.n = 0;
-        if (conjunto_por(&c, m->fd_parar, POLLIN, NULL) != 0 ||
-            conjunto_por(&c, fd_tun, POLLIN, NULL) != 0) {
-            ret = -1; /* sem memória nem para o básico */
-            break;
-        }
-        sn_fluxos_cada(m->fluxos, junta_fluxo, &c);
+        tique(m, sn_agora(m)); /* expira antes de esperar: os ponteiros do lote ficam válidos */
+        sn_fluxos_cada(m->fluxos, sincroniza, m);
 
-        int r = poll(c.pf, (nfds_t)c.n, POLL_MS);
+        int r = epoll_wait(m->fd_epoll, prontos, MAX_EVENTOS, POLL_MS);
         if (r < 0) {
             if (errno == EINTR)
                 continue;
             ret = -1;
             break;
         }
-        if (c.pf[0].revents & POLLIN)
+        short tun = 0;
+        int parar = 0;
+        for (int i = 0; i < r; i++) {
+            if (prontos[i].data.ptr == &MARCA_PARAR)
+                parar = 1;
+            else if (prontos[i].data.ptr == &MARCA_TUN)
+                tun = de_epoll(prontos[i].events);
+        }
+        if (parar)
             break; /* sn_motor_parar */
         sn_tempo agora = sn_agora(m);
 
-        for (size_t i = 2; i < c.n; i++)
-            if (c.pf[i].revents)
-                (c.fl[i]->tupla.protocolo == SN_PROTO_UDP ? sn_udp_socket : sn_tcp_socket)(
-                    m, c.fl[i], c.pf[i].revents, agora);
+        for (int i = 0; i < r; i++) {
+            void *p = prontos[i].data.ptr;
+            if (p == &MARCA_PARAR || p == &MARCA_TUN)
+                continue;
+            sn_fluxo *f = p;
+            (f->tupla.protocolo == SN_PROTO_UDP ? sn_udp_socket : sn_tcp_socket)(
+                m, f, de_epoll(prontos[i].events), agora);
+        }
 
-        if (c.pf[1].revents & (POLLERR | POLLNVAL)) {
+        if (tun & POLLERR) {
             ret = -1;
             break;
         }
-        if (c.pf[1].revents & (POLLIN | POLLHUP)) {
+        if (tun & (POLLIN | POLLHUP)) {
             int fechou = 0;
             for (int k = 0; k < MAX_LIDOS_POR_VOLTA; k++) {
                 ssize_t n = read(fd_tun, m->rx, sizeof m->rx);
@@ -280,8 +306,7 @@ int sn_motor_rodar(sn_motor *m, int fd_tun) {
             }
         }
     }
-    free(c.pf);
-    free(c.fl);
+    epoll_ctl(m->fd_epoll, EPOLL_CTL_DEL, fd_tun, NULL);
     uint64_t lixo;
     ssize_t r = read(m->fd_parar, &lixo, sizeof lixo); /* zera o pedido de parada */
     (void)r;
@@ -313,6 +338,7 @@ void sn_motor_destruir(sn_motor *m) {
         return;
     sn_motor_encerrar(m);
     close(m->fd_parar);
+    close(m->fd_epoll);
     sn_fila_liberar(&m->fila);
     pthread_mutex_destroy(&m->mu_dns);
     free(m);

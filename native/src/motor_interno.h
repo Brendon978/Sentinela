@@ -30,7 +30,12 @@ size_t sn_fila_tirar(sn_fila *f, uint8_t *dst, size_t cap);
 /* Início comum do estado de cada relé (fluxo->estado aponta para um destes). */
 typedef struct sn_estado {
     int fd;         /* socket real do fluxo; -1 se fechado */
-    short eventos;  /* o que pedir ao poll: POLLIN, POLLOUT */
+    short eventos;  /* o que o relé quer saber do socket: POLLIN, POLLOUT */
+    /* O que está registrado no epoll (só o laço mexe; calloc = nada registrado). Fechar o fd já
+     * tira o registro do kernel, por isso o laço compara o fd antes de usar. */
+    int registrado;
+    int fd_registrado;
+    short eventos_registrados;
     int alterado;   /* bytes mudaram desde o último SN_EV_FLUXO_BYTES */
     void (*liberar_extra)(struct sn_estado *e); /* buffers do relé; NULL se não tiver */
 } sn_estado;
@@ -45,6 +50,7 @@ struct sn_motor {
     sn_fila fila;
     int fd_tun;
     int fd_parar;          /* eventfd: sn_motor_parar escreve, o laço acorda */
+    int fd_epoll;          /* o laço espera aqui: fd_parar, o tun e os sockets dos fluxos */
     int encerrado;
     uint64_t ultimo_tique; /* última passada de expiração/bytes */
     uint8_t rx[65536];     /* buffer de leitura (tun e sockets) */

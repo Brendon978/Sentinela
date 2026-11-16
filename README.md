@@ -25,6 +25,8 @@ reencaminha pacotes é C, compilado pelo NDK.
 - **v1.1:** gravação salva a cada 5 s (e recuperada se o app morrer), marca de ECH no SNI,
   ignorar alerta por app, exportação em CSV (normal e anonimizada) e relatório em PDF, mapa da rede
   Wi-Fi (só em rede autorizada) e IA de linha de base por app (Isolation Forest).
+- **v1.2:** motor em `epoll`, captura separada do serviço (testada na JVM), gravação de 5 s só
+  do que mudou e IA julgando só as conexões que terminaram.
 
 Resultado completo, provas e limitações: [docs/relatorio-v1.md](docs/relatorio-v1.md).
 

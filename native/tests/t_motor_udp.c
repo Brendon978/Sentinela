@@ -388,3 +388,65 @@ TESTE(motor_forcar_tcp_descarta_quic) {
     CONFERE(ok);
     CONFERE_IGUAL_INT(novos, 1); /* só o fluxo do eco */
 }
+
+/* v1.2 (epoll): muitos fluxos abertos ao mesmo tempo; cada um recebe o seu eco. */
+TESTE(motor_muitos_fluxos_udp) {
+    enum { N = 300 };
+    sn_servidor_teste eco;
+    CONFERE(servidor_udp_iniciar(&eco, 4, 0) == 0);
+    sn_config c = config_base();
+    sn_banca b;
+    CONFERE(banca_iniciar(&b, &c) == 0);
+    static uint8_t visto[N];
+    memset(visto, 0, sizeof visto);
+    int recebidos = 0;
+    for (int i = 0; i < N; i++) {
+        sn_tupla t = tupla_app(4, (uint16_t)(41000 + i), LO_V4, eco.porta);
+        manda_udp(&b, &t, "m");
+    }
+    for (int i = 0; i < N; i++) {
+        uint8_t pkt[2048];
+        ssize_t n = banca_receber(&b, pkt, sizeof pkt, BANCA_TETO_MS);
+        if (n <= 0)
+            break;
+        sn_ip ip;
+        sn_udp u;
+        if (sn_ip_ler(pkt, (size_t)n, &ip) != SN_OK ||
+            sn_udp_ler(pkt + ip.tam_cabecalho, ip.tam_total - ip.tam_cabecalho, &u) != SN_OK)
+            continue;
+        int k = (int)u.porta_destino - 41000;
+        if (k >= 0 && k < N && !visto[k]) {
+            visto[k] = 1;
+            recebidos++;
+        }
+    }
+    banca_fim(&b);
+    servidor_udp_parar(&eco);
+    CONFERE_IGUAL_INT(recebidos, N);
+}
+
+/* v1.2 (epoll): expira, fecha o socket e abre outro fluxo, três vezes; cada novo fluxo tem que
+ * ser acordado pelo laço (o número do descritor costuma voltar, mas o teste não depende disso). */
+TESTE(motor_fd_reusado) {
+    sn_servidor_teste eco;
+    CONFERE(servidor_udp_iniciar(&eco, 4, 0) == 0);
+    sn_config c = config_base();
+    sn_banca b;
+    CONFERE(banca_iniciar(&b, &c) == 0);
+    int ok = 1;
+    for (int i = 0; i < 3 && ok; i++) {
+        sn_tupla t = tupla_app(4, (uint16_t)(42000 + i), LO_V4, eco.porta);
+        manda_udp(&b, &t, "r");
+        uint8_t d[64];
+        size_t n = 0;
+        ok = recebe_resposta(&b, &t, d, sizeof d, &n) && n == 1;
+        banca_avancar(&b, SN_UDP_OCIOSO_US + 1000000); /* expira e fecha o socket */
+        size_t de = 0;
+        uint16_t tam;
+        for (int k = 0; k <= i && ok; k++)
+            ok = banca_evento(&b, SN_EV_FLUXO_FIM, &de, &tam, BANCA_TETO_MS) != NULL;
+    }
+    banca_fim(&b);
+    servidor_udp_parar(&eco);
+    CONFERE(ok);
+}

@@ -101,4 +101,45 @@ class AlertasTest {
         assertEquals(1L, a.first { it.pacote == "com.app" }.fluxoId)
         assertTrue(a.first { it.pacote == "com.app" }.detalhe.contains("a.doubleclick.net"))
     }
+
+    // v1.2: lote só com fins de fluxo julga só quem terminou e acrescenta à lista que já existe
+    private fun baseDaIa(): com.brendon978.sentinela.ia.LinhaDeBase {
+        fun fechado(x: LinhaFluxo) = x.copy(fimUs = x.inicioUs + 30_000_000)
+        val historico = List(150) { fechado(l(it.toLong(), pacote = "com.app", dominio = "api.app.com").copy(bytesEnviados = 1_000L + it, sessaoId = it % 3L)) }
+        return com.brendon978.sentinela.ia.LinhaDeBase.treinar(historico, sp)
+    }
+    private fun vazamento(id: Long, pacote: String = "com.app") =
+        l(id, pacote = pacote, dominio = "api.app.com").copy(bytesEnviados = 80_000_000, fimUs = 30_000_000)
+
+    @Test fun `anomalia de quem terminou entra na lista de alertas`() {
+        val c = Alertas.Contexto(sp, emptySet(), emptySet(), linhaDeBase = baseDaIa())
+        val antes = listOf(Alerta(Regra.RASTREADOR, "com.app", "com.app", 1, "x", 0))
+        val depois = Alertas.acrescentarAnomalias(antes, listOf(vazamento(501)), c)
+        assertEquals(antes, depois.take(1))
+        assertEquals(listOf(501L), depois.filter { it.regra == Regra.COMPORTAMENTO_ANOMALO }.map { it.fluxoId })
+    }
+
+    @Test fun `app que ja tem o alerta de anomalia nao ganha outro e excecao impede`() {
+        val c = Alertas.Contexto(sp, emptySet(), emptySet(), linhaDeBase = baseDaIa())
+        val ja = Alertas.acrescentarAnomalias(emptyList(), listOf(vazamento(501)), c)
+        assertEquals(ja, Alertas.acrescentarAnomalias(ja, listOf(vazamento(502)), c))
+        val ignorado = c.copy(excecoes = setOf("com.app" to Regra.COMPORTAMENTO_ANOMALO))
+        assertEquals(emptyList<Alerta>(), Alertas.acrescentarAnomalias(emptyList(), listOf(vazamento(503)), ignorado))
+    }
+
+    @Test fun `lotes incrementais chegam aos mesmos (app, regra) da avaliacao completa`() {
+        val c = Alertas.Contexto(sp, emptySet(), emptySet(), linhaDeBase = baseDaIa())
+        val abertas = listOf(
+            l(600, pacote = "com.app", dominio = "api.app.com").copy(bytesEnviados = 80_000_000),
+            l(601, pacote = "com.app", dominio = "a.doubleclick.net"),
+        )
+        var alertas = Alertas.avaliar(abertas, c) // fluxos novos: avaliação completa (IA ainda não julga)
+        val fechadas = abertas.map { it.copy(fimUs = it.inicioUs + 30_000_000) }
+        alertas = Alertas.acrescentarAnomalias(alertas, fechadas.take(1), c)
+        alertas = Alertas.acrescentarAnomalias(alertas, fechadas.drop(1), c)
+        assertEquals(
+            Alertas.avaliar(fechadas, c).map { it.pacote to it.regra }.toSet(),
+            alertas.map { it.pacote to it.regra }.toSet(),
+        )
+    }
 }

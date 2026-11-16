@@ -114,3 +114,25 @@ tela desligada pela primeira vez detectadas em > 90%.
 - O mapa da rede não vê aparelhos que não anunciam nada e não têm nenhuma das portas testadas.
 - Nos dados móveis não há mapa: não existem vizinhos na rede local.
 - A IA só julga apps com histórico suficiente; nas primeiras sessões, só as regras fixas valem.
+
+## v1.2 — desempenho e estrutura (2026-11-16)
+
+Plano: `docs/superpowers/plans/2026-11-16-sentinela-v1.2-desempenho.md`.
+
+- **Motor em `epoll`:** os descritores ficam registrados no kernel e só mudam quando o relé muda
+  o que quer. O laço ainda percorre os fluxos na memória a cada volta, mas sem chamada ao sistema.
+  Com 300 fluxos UDP na bancada (com ASan), o tempo ficou igual ao do `poll` (112 ms contra
+  100 ms, mediana de 5): esse teste é dominado por E/S. O ganho esperado é em sessões longas com
+  muitas conexões paradas, e não foi medido no aparelho.
+- **Classe `Captura`:** drenagem, gravação a cada 5 s e treino da IA saíram do serviço e são
+  testados na JVM. A parada espera a gravação em curso e cancela o treino antes de encerrar o motor.
+- **Gravação parcial só do que mudou:** a cada 5 s vão para o banco só as conexões novas ou
+  diferentes, e os alertas só quando a lista mudou. Prova no aparelho: app morto no meio da
+  gravação, sessão recuperada com as mesmas 608 conexões da tela e `sha256sum -c` conferindo.
+- **IA incremental:** lote só com fins de conexão faz a IA julgar só as que terminaram, sem rodar
+  todas as regras. Durante a gravação, o alerta de comportamento anômalo pode apontar outra
+  conexão do mesmo app (a primeira que terminou, não a primeira que começou). O fim normal da
+  sessão refaz a avaliação completa. Numa sessão interrompida fica a escolha incremental.
+
+Ficou para depois: fazer os relés avisarem o `epoll` direto, em vez de o laço percorrer todos os
+fluxos, e marcar no agregador o que mudou, em vez de comparar todas as linhas a cada 5 s.

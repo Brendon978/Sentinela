@@ -20,7 +20,6 @@ import android.os.PowerManager
 import android.util.Log
 import com.brendon978.sentinela.MainActivity
 import com.brendon978.sentinela.dados.Banco
-import com.brendon978.sentinela.motor.Eventos
 import com.brendon978.sentinela.motor.Ip
 import com.brendon978.sentinela.sessao.Alertas
 import com.brendon978.sentinela.motor.Motor
@@ -28,15 +27,10 @@ import com.brendon978.sentinela.sessao.SessaoAtual
 import com.brendon978.sentinela.sessao.SessaoFinal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -77,7 +71,7 @@ class SessaoService : VpnService() {
     private val cadeado = Any()
     private var handle = 0L
     private var threadMotor: Thread? = null
-    private var leitura: Job? = null
+    private var captura: Captura? = null
     private var receptorTela: BroadcastReceiver? = null
     /** Uma parada em andamento: nada de iniciar outra sessão nem parar de novo até ela acabar. */
     private var parando = false
@@ -173,35 +167,14 @@ class SessaoService : VpnService() {
         )
         observarTela()
 
-        // A leitura nasce antes da thread do motor: se o motor falhar na hora, a parada já a acha.
-        leitura = escopo.launch {
-            var ultimaGravacao = System.currentTimeMillis()
-            var gravado: com.brendon978.sentinela.sessao.EstadoSessao? = null
-            while (isActive) {
-                delay(100) // curto: o dono da conexão só é achado enquanto ela existe
-                drenar()
-                val agora = System.currentTimeMillis()
-                if (agora - ultimaGravacao >= 5000) { // a cada 5 s a lista vai para o banco
-                    ultimaGravacao = agora
-                    val e = SessaoAtual.estado.value
-                    if (e !== gravado) // nada mudou em 5 s (o estado é imutável): não regrava
-                        runCatching { banco.gravarParcial(sessaoId, e.linhas, e.alertas, agora, e.eventosPerdidos) }
-                            .onSuccess { gravado = e }
-                            .onFailure { Log.e(TAG, "falha ao gravar a sessão em andamento", it) }
-                }
-            }
-        }
+        // A captura nasce antes da thread do motor: se o motor falhar na hora, a parada já a acha.
+        captura = Captura(
+            escopo, sessaoId, { Motor.eventos(h) }, banco, Dispatchers.IO, ZoneId.systemDefault(),
+            System::currentTimeMillis, ::avisarAlertas,
+        ).also { it.iniciar() }
         observarRede(cm)
-        // IA: treina o normal de cada app com as sessões anteriores, sem segurar o início
-        treino = escopo.launch { // Default: o treino é conta; só a leitura do banco é E/S
-            runCatching {
-                val historico = withContext(Dispatchers.IO) { banco.historico() }
-                SessaoAtual.definirLinhaDeBase(com.brendon978.sentinela.ia.LinhaDeBase.treinar(historico, ZoneId.systemDefault()))
-            }.onFailure { Log.w(TAG, "IA sem linha de base", it) }
-        }
         synchronized(cadeado) {
             handle = h
-            alertasAvisados = 0
             val fd = pfd.detachFd() // daqui em diante o motor é o dono do fd
             threadMotor = Thread({
                 val r = Motor.rodar(h, fd)
@@ -215,7 +188,6 @@ class SessaoService : VpnService() {
 
     private var observadorRede: ConnectivityManager.NetworkCallback? = null
     private var banco: Banco? = null
-    private var treino: Job? = null
 
     /** A rede real mudou (ex.: Wi-Fi -> dados): o motor passa a usar o DNS da rede nova. */
     private fun observarRede(cm: ConnectivityManager) {
@@ -261,30 +233,6 @@ class SessaoService : VpnService() {
             ?: validadas.firstOrNull() ?: reais.firstOrNull()
     }
 
-    /** Lê a fila inteira (o JNI entrega até 256 KiB por chamada). */
-    private fun drenarTudo(h: Long) {
-        while (true) {
-            val bytes = Motor.eventos(h)
-            if (bytes.isEmpty()) return
-            val lote = Eventos.decodificar(bytes)
-            lote.erro?.let { Log.e(TAG, "lote de eventos com erro: $it") }
-            SessaoAtual.aplicar(lote.eventos)
-        }
-    }
-
-    private var alertasAvisados = 0
-
-    private fun drenar() = synchronized(cadeado) {
-        val h = handle
-        if (h == 0L) return
-        drenarTudo(h)
-        val n = SessaoAtual.estado.value.alertas.size
-        if (n > alertasAvisados) {
-            alertasAvisados = n
-            avisarAlertas(n)
-        }
-    }
-
     /** Uma notificação só, atualizada com o total de alertas da sessão. */
     private fun avisarAlertas(n: Int) {
         val nm = getSystemService(NotificationManager::class.java)
@@ -324,9 +272,11 @@ class SessaoService : VpnService() {
             threadMotor = null
         }
         try {
-            // espera a leitura acabar: a gravação de 5 s não pode correr junto com o fechamento;
-            // o treino da IA desta sessão também para (não pode cair na próxima)
-            runBlocking { leitura?.cancelAndJoin(); treino?.cancelAndJoin() }
+            // a gravação de 5 s não pode correr junto com o fechamento; o treino da IA desta
+            // sessão também para (não pode cair na próxima)
+            val c = captura
+            captura = null
+            runBlocking { c?.pararTrabalho() }
             Motor.parar(h)
             t?.join(10_000)
             if (t?.isAlive == true) {
@@ -335,9 +285,9 @@ class SessaoService : VpnService() {
                 SessaoAtual.falhou("O motor não respondeu ao parar.")
             } else {
                 Motor.encerrar(h) // emite os fins dos fluxos abertos e fecha o pcap
-                drenarTudo(h)
+                val g = c?.terminar() ?: SessaoAtual.terminar()
                 Motor.destruir(h)
-                SessaoFinal.concluir(this, SessaoAtual.terminar())
+                SessaoFinal.concluir(this, g)
             }
             receptorTela?.let { runCatching { unregisterReceiver(it) } }
             receptorTela = null

@@ -5,32 +5,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.ByteArrayOutputStream
 
 /** Bytes montados à mão a partir da tabela C2 do plano (little-endian). */
 class EventosTest {
-    private class Lote {
-        val out = ByteArrayOutputStream()
-        fun registro(tipo: Int, corpo: ByteArray) = apply {
-            out.write(tipo)
-            out.write(corpo.size and 0xff)
-            out.write(corpo.size shr 8)
-            out.write(corpo)
-        }
-        fun bytes(): ByteArray = out.toByteArray()
-    }
-
-    private class Corpo {
-        val out = ByteArrayOutputStream()
-        fun u8(v: Int) = apply { out.write(v) }
-        fun u16(v: Int) = apply { out.write(v and 0xff); out.write(v shr 8 and 0xff) }
-        fun u32(v: Long) = apply { for (i in 0 until 4) out.write((v shr (8 * i)).toInt() and 0xff) }
-        fun u64(v: Long) = apply { for (i in 0 until 8) out.write((v shr (8 * i)).toInt() and 0xff) }
-        fun ip(vararg b: Int) = apply { val ip = ByteArray(16); b.forEachIndexed { i, x -> ip[i] = x.toByte() }; out.write(ip) }
-        fun texto(s: String) = apply { out.write(s.toByteArray()) }
-        fun bytes(): ByteArray = out.toByteArray()
-    }
-
     @Test
     fun `fluxo novo IPv4`() {
         val corpo = Corpo().u32(7).u8(4).u8(6).ip(10, 111, 0, 1).u16(40000).ip(93, 184, 215, 14).u16(443)

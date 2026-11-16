@@ -69,6 +69,26 @@ object Alertas {
         return saida
     }
 
+    /**
+     * Lote só com fins de fluxo (a maioria): as outras regras não mudam, então a IA julga só as
+     * conexões que terminaram e o alerta entra se o app ainda não tem o dele (um por app e regra,
+     * como no [avaliar]). Pode apontar outro fluxo do app que o [avaliar] apontaria (o primeiro
+     * que terminou, não o primeiro que começou); a próxima avaliação completa reordena.
+     */
+    fun acrescentarAnomalias(alertas: List<Alerta>, terminadas: List<LinhaFluxo>, c: Contexto): List<Alerta> {
+        val base = c.linhaDeBase ?: return alertas
+        val achados = base.avaliar(terminadas).associateBy { it.fluxoId }
+        if (achados.isEmpty()) return alertas
+        val comAlerta = alertas.filter { it.regra == Regra.COMPORTAMENTO_ANOMALO }.mapTo(HashSet()) { it.pacote }
+        val novos = mutableListOf<Alerta>()
+        for (l in terminadas.sortedBy { it.inicioUs }) {
+            val a = achados[l.fluxoId] ?: continue
+            if ((l.pacoteApp to Regra.COMPORTAMENTO_ANOMALO) in c.excecoes || !comAlerta.add(l.pacoteApp)) continue
+            novos += Alerta(Regra.COMPORTAMENTO_ANOMALO, l.pacoteApp, l.rotulo, l.fluxoId, explicar(a, l), l.inicioUs)
+        }
+        return alertas + novos
+    }
+
     /** Em palavras: o que fugiu do padrão e com que nota. */
     private fun explicar(a: com.brendon978.sentinela.ia.Achado, l: LinhaFluxo): String {
         val o_que = when (a.indice) {

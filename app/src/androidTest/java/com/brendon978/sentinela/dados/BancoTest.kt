@@ -78,9 +78,9 @@ class BancoTest {
     @Test fun gravacaoContinuaSemDuplicarEFechaNoFim() {
         val id = banco.abrirSessao(1000, "/x/sessao-1000.pcap")
         assertEquals(listOf(EstadoSessaoSalva.GRAVANDO), banco.sessoes().map { it.estado })
-        banco.gravarParcial(id, listOf(linha(1, "com.a", "a.com")), emptyList(), 2000)
+        banco.gravarParcial(id, listOf(linha(1, "com.a", "a.com")), emptyList(), 2000, bytes = 30, eventosPerdidos = 0)
         // o mesmo fluxo com bytes novos + um fluxo novo: atualiza, não duplica
-        banco.gravarParcial(id, listOf(linha(1, "com.a", "a.com").copy(bytesRecebidos = 99), linha(2, "com.b", "b.com")), emptyList(), 3000)
+        banco.gravarParcial(id, listOf(linha(1, "com.a", "a.com").copy(bytesRecebidos = 99), linha(2, "com.b", "b.com")), emptyList(), 3000, bytes = 149, eventosPerdidos = 0)
         val f = banco.fluxos(id)
         assertEquals(listOf(1L, 2L), f.map { it.fluxoId }.sorted())
         assertEquals(99L, f.first { it.fluxoId == 1L }.bytesRecebidos)
@@ -135,8 +135,23 @@ class BancoTest {
 
     @Test fun parcialGuardaEventosPerdidos() {
         val id = banco.abrirSessao(1, "/x.pcap")
-        banco.gravarParcial(id, emptyList(), emptyList(), 2, eventosPerdidos = 12)
+        banco.gravarParcial(id, emptyList(), emptyList(), 2, bytes = 0, eventosPerdidos = 12)
         assertEquals(12L, banco.sessoes().single().eventosPerdidos)
+    }
+
+    @Test fun parcialSoComOQueMudouMantemORestoEOsAlertas() {
+        val id = banco.abrirSessao(1, "/x.pcap")
+        val alerta = com.brendon978.sentinela.sessao.Alerta(
+            com.brendon978.sentinela.sessao.Regra.RASTREADOR, "com.a", "Chrome", 1, "x", 5_000,
+        )
+        banco.gravarParcial(id, listOf(linha(1, "com.a", "a.com"), linha(2, "com.b", "b.com")), listOf(alerta), 2, bytes = 60, eventosPerdidos = 0)
+        // 5 s depois só o fluxo 2 mudou; alertas iguais vão como null
+        banco.gravarParcial(id, listOf(linha(2, "com.b", "b.com").copy(bytesRecebidos = 500)), null, 3, bytes = 540, eventosPerdidos = 0)
+        val f = banco.fluxos(id).associateBy { it.fluxoId }
+        assertEquals(setOf(1L, 2L), f.keys)
+        assertEquals(500L, f.getValue(2).bytesRecebidos)
+        assertEquals(listOf(alerta), banco.alertas(id))
+        assertEquals(540L, banco.sessoes().single().bytes)
     }
 
     @Test fun apagarSessaoLevaOsFluxosJunto() {

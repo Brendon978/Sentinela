@@ -28,7 +28,8 @@ data class SessaoSalva(
  * Banco local (contrato C4 do plano). SQLiteOpenHelper direto, sem Room: o esquema é pequeno
  * e assim não entra gerador de código no build.
  */
-class Banco(ctx: Context, nome: String = "sentinela.db") : SQLiteOpenHelper(ctx, nome, null, 5) {
+class Banco(ctx: Context, nome: String = "sentinela.db") : SQLiteOpenHelper(ctx, nome, null, 5),
+    com.brendon978.sentinela.vpn.GravadorSessao {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE sessao (
@@ -96,11 +97,17 @@ class Banco(ctx: Context, nome: String = "sentinela.db") : SQLiteOpenHelper(ctx,
         put("pacotes", 0); put("bytes", 0); put("eventos_perdidos", 0); put("estado", EstadoSessaoSalva.GRAVANDO.name)
     })
 
-    /** Grava o estado atual da sessão em andamento (fluxos atualizados no lugar, alertas trocados). */
-    fun gravarParcial(id: Long, fluxos: List<LinhaFluxo>, alertas: List<Alerta>, agoraMs: Long, eventosPerdidos: Long = 0) = transacao { db ->
-        gravarFluxosEAlertas(db, id, fluxos, alertas)
+    /**
+     * Gravação de 5 s: `fluxos` são só os novos ou mudados (os outros ficam como estão), `alertas`
+     * null = iguais aos já gravados, `bytes` = total da sessão (não dá para somar só os mudados).
+     */
+    override fun gravarParcial(
+        id: Long, fluxos: List<LinhaFluxo>, alertas: List<Alerta>?, agoraMs: Long, bytes: Long, eventosPerdidos: Long,
+    ): Unit = transacao { db ->
+        gravarFluxos(db, id, fluxos)
+        alertas?.let { gravarAlertas(db, id, it) }
         db.update("sessao", ContentValues().apply {
-            put("fim_ms", agoraMs); put("bytes", fluxos.sumOf { it.bytesEnviados + it.bytesRecebidos })
+            put("fim_ms", agoraMs); put("bytes", bytes)
             put("eventos_perdidos", eventosPerdidos)
         }, "id = ? AND estado = ?", arrayOf(id.toString(), EstadoSessaoSalva.GRAVANDO.name))
     }
@@ -111,7 +118,8 @@ class Banco(ctx: Context, nome: String = "sentinela.db") : SQLiteOpenHelper(ctx,
         fluxos: List<LinhaFluxo>, alertas: List<Alerta>, agoraMs: Long = fimMs, iaApps: Int? = null,
     ) = transacao { db ->
         db.update("sessao", ContentValues().apply { put("ia_apps", iaApps) }, "id = ?", arrayOf(id.toString()))
-        gravarFluxosEAlertas(db, id, fluxos, alertas)
+        gravarFluxos(db, id, fluxos)
+        gravarAlertas(db, id, alertas)
         for (f in fluxos) if (f.pacoteApp != null && f.dominio != null) {
             db.insertWithOnConflict("dominio_visto", null, ContentValues().apply {
                 put("pacote_app", f.pacoteApp); put("dominio", f.dominio); put("primeira_vez_ms", agoraMs)
@@ -138,7 +146,7 @@ class Banco(ctx: Context, nome: String = "sentinela.db") : SQLiteOpenHelper(ctx,
         else db.update("sessao", valores, "id = ?", arrayOf(id.toString()))
     }
 
-    private fun gravarFluxosEAlertas(db: SQLiteDatabase, id: Long, fluxos: List<LinhaFluxo>, alertas: List<Alerta>) {
+    private fun gravarFluxos(db: SQLiteDatabase, id: Long, fluxos: List<LinhaFluxo>) {
         for (f in fluxos) {
             db.insertWithOnConflict("fluxo", null, ContentValues().apply {
                 // sessao_id é o id desta sessão, não f.sessaoId
@@ -153,6 +161,9 @@ class Banco(ctx: Context, nome: String = "sentinela.db") : SQLiteOpenHelper(ctx,
                 put("nota_ia", f.notaIa); put("limiar_ia", f.limiarIa)
             }, SQLiteDatabase.CONFLICT_REPLACE)
         }
+    }
+
+    private fun gravarAlertas(db: SQLiteDatabase, id: Long, alertas: List<Alerta>) {
         db.delete("alerta", "sessao_id = ?", arrayOf(id.toString()))
         for (a in alertas) {
             db.insertOrThrow("alerta", null, ContentValues().apply {
@@ -253,7 +264,9 @@ class Banco(ctx: Context, nome: String = "sentinela.db") : SQLiteOpenHelper(ctx,
      * com volume parcial), as mais recentes primeiro, sem as que a própria IA já acusou (um
      * vazamento visto uma vez não pode virar "normal" nas próximas sessões).
      */
-    fun historico(limite: Int = 20_000): List<LinhaFluxo> = lerFluxos(
+    override fun historico(): List<LinhaFluxo> = historico(20_000)
+
+    fun historico(limite: Int): List<LinhaFluxo> = lerFluxos(
         "WHERE s.estado = 'CONCLUIDA' ORDER BY s.inicio_ms DESC, f.inicio_us", null, limite,
     ) { it.completa && !it.acusadaPelaIa } // a nota fica guardada em toda conexão julgada, com alerta ou não
 
