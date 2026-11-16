@@ -1,0 +1,84 @@
+package com.brendon978.sentinela.dados
+
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.brendon978.sentinela.sessao.LinhaFluxo
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/** Roda no aparelho, num banco próprio do teste (não toca no banco do app). */
+@RunWith(AndroidJUnit4::class)
+class BancoTest {
+    private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+    private lateinit var banco: Banco
+
+    @Before fun abre() {
+        ctx.deleteDatabase("sentinela-teste.db")
+        banco = Banco(ctx, "sentinela-teste.db")
+    }
+
+    @After fun fecha() {
+        banco.close()
+        ctx.deleteDatabase("sentinela-teste.db")
+    }
+
+    private fun linha(id: Long, pacote: String?, dominio: String?) = LinhaFluxo(
+        0, id, 6, 4, "10.111.0.1", 40000 + id.toInt(), "93.184.215.14", 443, 10123, pacote, "Chrome",
+        dominio, "SNI", 10, 20, 3, 1_700_000_000_000_000, null, null,
+    )
+
+    @Test fun salvaELeSessaoComFluxos() {
+        val s = SessaoSalva(0, 1000, 2000, "/x/sessao-1000.pcap", "abc", 3, 30, 0)
+        val id = banco.salvarSessao(s, listOf(linha(1, "com.android.chrome", "www.exemplo.com"), linha(2, null, null)), 5000)
+        val salvas = banco.sessoes()
+        assertEquals(1, salvas.size)
+        assertEquals(id, salvas[0].id)
+        assertEquals("abc", salvas[0].sha256)
+        val fluxos = banco.fluxos(id)
+        assertEquals(listOf(1L, 2L), fluxos.map { it.fluxoId }.sorted())
+        val f = fluxos.first { it.fluxoId == 1L }
+        assertEquals(6, f.protocolo)
+        assertEquals(id, f.sessaoId)
+        assertEquals("www.exemplo.com", f.dominio)
+        assertEquals(setOf("com.android.chrome" to "www.exemplo.com"), banco.dominiosVistos())
+    }
+
+    @Test fun alertasVoltamComOsCampos() {
+        val a = com.brendon978.sentinela.sessao.Alerta(
+            com.brendon978.sentinela.sessao.Regra.RASTREADOR, "com.jogo", "Jogo", 1, "x.doubleclick.net", 1_700_000_000_000_000,
+        )
+        val id = banco.salvarSessao(SessaoSalva(0, 1, 2, "/x", "h", 0, 0, 0), listOf(linha(1, "com.jogo", "x.doubleclick.net")), 1, listOf(a))
+        assertEquals(listOf(a), banco.alertas(id))
+    }
+
+    /** O celular do Brendon tinha um banco da versão 1: ele tem de abrir e continuar funcionando. */
+    @Test fun migraDaVersao1() {
+        banco.close()
+        ctx.deleteDatabase("sentinela-teste.db")
+        val v1 = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(ctx.getDatabasePath("sentinela-teste.db"), null)
+        v1.execSQL("CREATE TABLE sessao (id INTEGER PRIMARY KEY AUTOINCREMENT, inicio_ms INTEGER NOT NULL, fim_ms INTEGER NOT NULL, caminho_pcap TEXT NOT NULL, sha256 TEXT NOT NULL, pacotes INTEGER NOT NULL, bytes INTEGER NOT NULL, eventos_perdidos INTEGER NOT NULL)")
+        v1.execSQL("CREATE TABLE fluxo (sessao_id INTEGER NOT NULL REFERENCES sessao(id) ON DELETE CASCADE, fluxo_id INTEGER NOT NULL, proto INTEGER NOT NULL, versao_ip INTEGER NOT NULL, ip_origem TEXT NOT NULL, porta_origem INTEGER NOT NULL, ip_destino TEXT NOT NULL, porta_destino INTEGER NOT NULL, uid INTEGER NOT NULL, pacote_app TEXT, rotulo_app TEXT, dominio TEXT, origem_dominio TEXT NOT NULL, bytes_env INTEGER NOT NULL, bytes_rec INTEGER NOT NULL, pacotes INTEGER NOT NULL, inicio_us INTEGER NOT NULL, fim_us INTEGER, motivo_fim INTEGER, PRIMARY KEY (sessao_id, fluxo_id))")
+        v1.execSQL("CREATE TABLE dominio_visto (pacote_app TEXT NOT NULL, dominio TEXT NOT NULL, primeira_vez_ms INTEGER NOT NULL, PRIMARY KEY (pacote_app, dominio))")
+        v1.execSQL("CREATE TABLE alerta (id INTEGER PRIMARY KEY AUTOINCREMENT, sessao_id INTEGER NOT NULL REFERENCES sessao(id) ON DELETE CASCADE, fluxo_id INTEGER, regra TEXT NOT NULL, pacote_app TEXT, detalhe TEXT NOT NULL, quando_ms INTEGER NOT NULL)")
+        v1.execSQL("INSERT INTO sessao VALUES (1, 1, 2, '/x', 'h', 0, 0, 0)")
+        v1.execSQL("INSERT INTO fluxo VALUES (1, 7, 6, 4, '10.111.0.1', 1, '1.1.1.1', 443, 1, 'com.a', 'A', 'a.com', 'SNI', 1, 1, 1, 0, NULL, NULL)")
+        v1.version = 1
+        v1.close()
+        banco = Banco(ctx, "sentinela-teste.db")
+        assertEquals(listOf(7L), banco.fluxos(1).map { it.fluxoId })
+        assertEquals(false, banco.fluxos(1)[0].telaDesligada)
+        banco.salvarSessao(SessaoSalva(0, 3, 4, "/y", "h", 0, 0, 0), listOf(linha(1, "com.a", "b.com")), 1,
+            listOf(com.brendon978.sentinela.sessao.Alerta(com.brendon978.sentinela.sessao.Regra.DOMINIO_NOVO, "com.a", "A", 1, "b.com", 0)))
+        assertEquals(2, banco.sessoes().size)
+    }
+
+    @Test fun apagarSessaoLevaOsFluxosJunto() {
+        val id = banco.salvarSessao(SessaoSalva(0, 1, 2, "/x", "h", 0, 0, 0), listOf(linha(1, null, null)), 1)
+        banco.apagarSessao(id)
+        assertEquals(0, banco.sessoes().size)
+        assertEquals(0, banco.fluxos(id).size)
+    }
+}

@@ -1,0 +1,12 @@
+.gradle/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+native/build-host/
+tools/.venv/
+.pmedico/
+docs/pmedico/
+.cxx/
+*/.cxx/

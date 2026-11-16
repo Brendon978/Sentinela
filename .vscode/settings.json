@@ -1,0 +1,5 @@
+{
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/native/build-host/compile_commands.json",
+  "clangd.arguments": ["--compile-commands-dir=${workspaceFolder}/native/build-host"],
+  "files.associations": { "*.h": "c" }
+}

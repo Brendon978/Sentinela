@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Testes C (todos)",
+      "type": "shell",
+      "command": "${workspaceFolder}/tools/testes-c.sh",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Testes C (filtro)",
+      "type": "shell",
+      "command": "${workspaceFolder}/tools/testes-c.sh ${input:filtro}",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    { "id": "filtro", "type": "promptString", "description": "Parte do nome dos testes", "default": "ip_checksum" }
+  ]
+}
