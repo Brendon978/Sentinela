@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.RouteInfo
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -24,6 +25,7 @@ import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.Collections
 import kotlin.coroutines.resume
@@ -31,7 +33,9 @@ import kotlin.coroutines.resume
 /**
  * Varre a rede Wi-Fi em que o celular está: anúncios mDNS, respostas SSDP e algumas portas TCP
  * de cada endereço da /24. Tudo pela rede Wi-Fi de verdade (mesmo com a VPN do Sentinela ligada,
- * o app fica fora dela). Só em rede própria ou autorizada.
+ * o app fica fora dela). Outra VPN que não deixa apps se vincularem ao Wi-Fi (o Tailscale, por
+ * exemplo) faz o mapa usar a rota normal, desde que ela não leve a rede local; se levar, o mapa não
+ * varre (sondaria a rede do outro lado da VPN). Só em rede própria ou autorizada.
  */
 class Varredor(private val ctx: Context) {
     companion object {
@@ -46,6 +50,14 @@ class Varredor(private val ctx: Context) {
     }
 
     class SemWifi : Exception("Conecte o celular a uma rede Wi-Fi para mapear.")
+    class VpnLevaARede : Exception(
+        "Outra VPN ligada está levando a rede local por ela (por exemplo, um exit node do Tailscale sem " +
+            "\"acesso à rede local\"). Desligue-a ou libere o acesso à rede local para mapear.",
+    )
+
+    /** Observação sobre a última varredura (null = nada a dizer). */
+    var aviso: String? = null
+        private set
 
     private val cm = ctx.getSystemService(ConnectivityManager::class.java)
 
@@ -60,19 +72,37 @@ class Varredor(private val ctx: Context) {
         val meu = lp.linkAddresses.firstOrNull { it.address is Inet4Address } ?: throw SemWifi()
         val gateway = lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is Inet4Address }?.gateway?.hostAddress
         val hosts = SubRede.hosts(meu.address.hostAddress!!, meu.prefixLength)
+        // Rede por onde os sockets saem: o Wi-Fi vinculado; null = rota normal (outra VPN não deixou vincular)
+        val via = if (podeVincular(rede)) rede else {
+            if (RotasVpn.levaPelaVpn(meu.address.hostAddress!!, rotasDeVpn())) throw VpnLevaARede()
+            aviso = "Outra VPN está ligada (por exemplo, o Tailscale): o mapa foi pela rota normal até a rede local."
+            null
+        }
         progresso("Procurando em ${hosts.size} endereços…")
         val achados = coroutineScope {
             val m = async { mdns() }
-            val s = async { ssdp(rede) }
-            val p = async { portas(rede, hosts, progresso) }
+            val s = async { ssdp(via) }
+            val p = async { portas(via, hosts, progresso) }
             m.await() + s.await() + p.await()
         }
         Mapa.juntar(achados + listOfNotNull(gateway?.let { Aparelho(it, gateway = true) }))
     }
 
+    /** Uma VPN sem "bypass" faz o Android recusar o vínculo ao Wi-Fi (EPERM). */
+    private fun podeVincular(rede: Network): Boolean =
+        runCatching { DatagramSocket().use { rede.bindSocket(it) } }
+            .onFailure { Log.i(TAG, "sem vínculo ao Wi-Fi (outra VPN?): $it") }
+            .isSuccess
+
+    private fun rotasDeVpn(): List<RotasVpn.Rota> = cm.allNetworks
+        .filter { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true }
+        .flatMap { cm.getLinkProperties(it)?.routes.orEmpty() }
+        .filter { it.destination.address is Inet4Address }
+        .map { RotasVpn.Rota(it.destination.address.hostAddress!!, it.destination.prefixLength, it.type == RouteInfo.RTN_THROW) }
+
     // ------------------------------------------------------------------ portas
 
-    private suspend fun portas(rede: Network, hosts: List<String>, progresso: (String) -> Unit): List<Aparelho> = coroutineScope {
+    private suspend fun portas(rede: Network?, hosts: List<String>, progresso: (String) -> Unit): List<Aparelho> = coroutineScope {
         val limite = Semaphore(64)
         val feitos = java.util.concurrent.atomic.AtomicInteger()
         hosts.map { ip ->
@@ -86,18 +116,18 @@ class Varredor(private val ctx: Context) {
         }.mapNotNull { it.await() }
     }
 
-    private fun tentaConectar(rede: Network, ip: String, porta: Int): Boolean = runCatching {
-        rede.socketFactory.createSocket().use { s -> s.connect(InetSocketAddress(ip, porta), 400); true }
+    private fun tentaConectar(rede: Network?, ip: String, porta: Int): Boolean = runCatching {
+        (rede?.socketFactory?.createSocket() ?: Socket()).use { s -> s.connect(InetSocketAddress(ip, porta), 400); true }
     }.getOrDefault(false)
 
     // ------------------------------------------------------------------ SSDP
 
-    private suspend fun ssdp(rede: Network): List<Aparelho> {
+    private suspend fun ssdp(rede: Network?): List<Aparelho> {
         val wifi = ctx.applicationContext.getSystemService(WifiManager::class.java)
         val trava = wifi.createMulticastLock("sentinela-ssdp").apply { setReferenceCounted(false); acquire() }
         return try {
             DatagramSocket().use { sock ->
-                rede.bindSocket(sock)
+                rede?.bindSocket(sock)
                 sock.soTimeout = 300
                 val destino = InetSocketAddress(InetAddress.getByName("239.255.255.250"), 1900)
                 val pergunta = Ssdp.PERGUNTA.toByteArray()

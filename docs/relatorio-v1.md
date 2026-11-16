@@ -136,3 +136,18 @@ Plano: `docs/superpowers/plans/2026-11-16-sentinela-v1.2-desempenho.md`.
 
 Ficou para depois: fazer os relés avisarem o `epoll` direto, em vez de o laço percorrer todos os
 fluxos, e marcar no agregador o que mudou, em vez de comparar todas as linhas a cada 5 s.
+
+## Correção do mapa com outra VPN ligada (2026-11-16)
+
+Com o Tailscale ligado no celular, o Android recusa vincular sockets ao Wi-Fi (`EPERM`), porque a
+VPN dele não permite contornar a rota dela. O mapa tratava cada recusa como porta fechada e
+devolvia só o gateway, sem avisar. Agora o mapa testa o vínculo antes de começar. Sem vínculo,
+ele consulta as rotas da outra VPN (`RotasVpn.levaPelaVpn`, testada na JVM):
+
+- se a VPN não leva a rede local (o Tailscale sem exit node só leva 100.64.0.0/10), o mapa vai
+  pela rota normal e mostra um aviso;
+- se ela leva a rede local (um exit node sem "acesso à rede local"), o mapa não varre, para não
+  sondar a rede do outro lado da VPN.
+
+Prova no aparelho, na rede de casa com o Tailscale ligado: o log mostrou o `EPERM`, e o mapa achou
+o roteador (portas 22 e 80, UPnP) e o PC (porta 445).

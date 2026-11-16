@@ -59,4 +59,25 @@ class MapaTest {
         assertEquals(setOf(80, 8009), m[1].portas)
         assertEquals(setOf("Sala TV"), m[1].nomes)
     }
+
+    // outra VPN ligada: o mapa só segue pela rota normal se a VPN não leva a rede local
+    @Test fun `vpn so com a faixa dela nao leva a rede local`() {
+        // Tailscale sem exit node: só 100.64.0.0/10
+        val rotas = listOf(RotasVpn.Rota("100.64.0.0", 10))
+        assertEquals(false, RotasVpn.levaPelaVpn("192.168.0.101", rotas))
+        assertEquals(true, RotasVpn.levaPelaVpn("100.79.223.93", rotas))
+    }
+
+    @Test fun `vpn com rota padrao leva tudo, menos o que ela exclui`() {
+        // exit node: 0.0.0.0/0; com "acesso à rede local" a VPN exclui a faixa da LAN
+        val tudo = listOf(RotasVpn.Rota("0.0.0.0", 0))
+        assertEquals(true, RotasVpn.levaPelaVpn("192.168.0.101", tudo))
+        val comLan = tudo + RotasVpn.Rota("192.168.0.0", 16, excluida = true)
+        assertEquals(false, RotasVpn.levaPelaVpn("192.168.0.101", comLan))
+        assertEquals(true, RotasVpn.levaPelaVpn("8.8.8.8", comLan))
+    }
+
+    @Test fun `sem rotas a vpn nao leva nada`() {
+        assertEquals(false, RotasVpn.levaPelaVpn("192.168.0.1", emptyList()))
+    }
 }

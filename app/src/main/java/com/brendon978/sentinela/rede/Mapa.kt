@@ -91,3 +91,29 @@ object Mapa {
             )
         }.sortedBy { a -> a.ip.split('.').fold(0L) { acc, p -> acc * 256 + (p.toLongOrNull() ?: 0) } }
 }
+
+/**
+ * Para onde vai o tráfego para um IP da rede local quando outra VPN (Tailscale, por exemplo) está
+ * ligada e não deixa o app se vincular direto ao Wi-Fi. Só IPv4.
+ */
+object RotasVpn {
+    /** `excluida` = rota que a VPN tira de dentro dela (RTN_THROW): esse destino segue pela rede normal. */
+    data class Rota(val destino: String, val prefixo: Int, val excluida: Boolean = false)
+
+    /** A VPN leva esse IP? Vale a rota mais específica (maior prefixo) que contém o IP. */
+    fun levaPelaVpn(ip: String, rotas: List<Rota>): Boolean {
+        val alvo = numero(ip) ?: return false
+        return rotas
+            .filter { r -> numero(r.destino)?.let { mascarar(it, r.prefixo) == mascarar(alvo, r.prefixo) } == true }
+            .maxByOrNull { it.prefixo }
+            ?.let { !it.excluida } ?: false
+    }
+
+    private fun numero(ip: String): Long? {
+        val p = ip.split('.').map { it.toLongOrNull() ?: return null }
+        return if (p.size == 4 && p.all { it in 0..255 }) p.fold(0L) { acc, x -> acc * 256 + x } else null
+    }
+
+    private fun mascarar(n: Long, prefixo: Int): Long =
+        if (prefixo <= 0) 0 else n and (0xFFFFFFFFL shl (32 - prefixo.coerceAtMost(32))) and 0xFFFFFFFFL
+}

@@ -248,8 +248,13 @@ class MainActivity : ComponentActivity() {
                             varrendo = true
                             statusRede = "Começando…"
                             lifecycleScope.launch {
-                                runCatching { com.brendon978.sentinela.rede.Varredor(this@MainActivity).mapear { statusRede = it } }
-                                    .onSuccess { aparelhos = it; statusRede = "${it.size} aparelhos encontrados" }
+                                val varredor = com.brendon978.sentinela.rede.Varredor(this@MainActivity)
+                                runCatching { varredor.mapear { statusRede = it } }
+                                    .onSuccess {
+                                        aparelhos = it
+                                        statusRede = (if (it.size == 1) "1 aparelho encontrado" else "${it.size} aparelhos encontrados") +
+                                            (varredor.aviso?.let { a -> "\n$a" } ?: "")
+                                    }
                                     .onFailure { statusRede = it.message ?: "Falhou: $it" }
                                 varrendo = false
                             }
