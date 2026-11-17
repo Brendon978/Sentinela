@@ -87,4 +87,28 @@ class AgregadorTest {
         assertEquals(0, a.conexoes.size)
         assertEquals(5L, a.eventosPerdidos)
     }
+
+    // O Chrome manda ECH falso (GREASE) em quase toda conexão: aí o SNI é o nome real. O DNS desempata.
+    @Test fun `ech com o mesmo nome que o dns resolveu e o nome real`() {
+        val a = agregador()
+        a.aplicar(Evento.Dns(listOf(servidor), "www.bbc.com"))
+        a.aplicar(novo(1))
+        a.aplicar(Evento.Sni(1, "www.bbc.com", ech = true))
+        assertEquals("www.bbc.com", a.conexoes.getValue(1).dominio)
+        assertEquals(OrigemDominio.SNI, a.conexoes.getValue(1).origemDominio)
+    }
+
+    @Test fun `dns que chega depois desempata o ech`() {
+        val a = agregador()
+        val outro = ip4(9, 9, 9, 9)
+        a.aplicar(novo(1))
+        a.aplicar(Evento.Sni(1, "www.bbc.com", ech = true))
+        a.aplicar(novo(2, outro))
+        a.aplicar(Evento.Sni(2, "cloudflare-ech.com", ech = true))
+        a.aplicar(Evento.Dns(listOf(servidor), "www.bbc.com"))      // mesmo nome: era GREASE
+        a.aplicar(Evento.Dns(listOf(outro), "site-de-verdade.com")) // nome diferente: ECH de verdade
+        assertEquals(OrigemDominio.SNI, a.conexoes.getValue(1).origemDominio)
+        assertEquals("site-de-verdade.com", a.conexoes.getValue(2).dominio)
+        assertEquals(OrigemDominio.DNS, a.conexoes.getValue(2).origemDominio)
+    }
 }

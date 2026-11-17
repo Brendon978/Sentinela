@@ -6,7 +6,11 @@ import com.brendon978.sentinela.motor.MotivoFim
 import com.brendon978.sentinela.motor.Protocolo
 import com.brendon978.sentinela.vpn.App
 
-/** SNI_ECH: veio do SNI, mas o ClientHello usa ECH — é o nome público do provedor, não o site. */
+/**
+ * SNI_ECH: veio do SNI de um ClientHello com ECH e não havia DNS para conferir. Pode ser o nome
+ * público do provedor (ECH de verdade) ou o próprio site (ECH falso, "GREASE", que o Chrome manda
+ * em quase toda conexão para o recurso não chamar atenção).
+ */
 enum class OrigemDominio { SNI, SNI_ECH, DNS, NENHUM }
 
 data class Conexao(
@@ -67,15 +71,27 @@ class Agregador(
             }
             is Evento.FluxoFim -> atualiza(e.id) { it.copy(fimUs = e.fimUs, motivo = e.motivo) }
             is Evento.Sni -> atualiza(e.id) {
-                // com ECH o SNI é o nome público do provedor: o nome que veio do DNS é melhor
-                if (e.ech && it.origemDominio == OrigemDominio.DNS) it
-                else it.copy(dominio = e.nome, origemDominio = if (e.ech) OrigemDominio.SNI_ECH else OrigemDominio.SNI)
+                when {
+                    !e.ech -> it.copy(dominio = e.nome, origemDominio = OrigemDominio.SNI)
+                    // ECH com o nome que o DNS resolveu: era GREASE, o SNI é o nome real
+                    it.origemDominio == OrigemDominio.DNS && it.dominio == e.nome -> it.copy(origemDominio = OrigemDominio.SNI)
+                    // ECH com outro nome: provável ECH de verdade (nome do provedor); o do DNS é melhor
+                    it.origemDominio == OrigemDominio.DNS -> it
+                    else -> it.copy(dominio = e.nome, origemDominio = OrigemDominio.SNI_ECH)
+                }
             }
             is Evento.Dns -> {
                 e.enderecos.forEach { nomePorIp[it] = e.nome }
                 val alvos = e.enderecos.toSet()
-                porId.values.filter { it.origemDominio == OrigemDominio.NENHUM && it.destino in alvos }
-                    .forEach { porId[it.id] = it.copy(dominio = e.nome, origemDominio = OrigemDominio.DNS) }
+                for (c in porId.values.filter { it.destino in alvos }) when {
+                    c.origemDominio == OrigemDominio.NENHUM ->
+                        porId[c.id] = c.copy(dominio = e.nome, origemDominio = OrigemDominio.DNS)
+                    // o DNS desempata o ECH que chegou sem ele (mesmo nome = GREASE; outro = ECH de verdade)
+                    c.origemDominio == OrigemDominio.SNI_ECH -> porId[c.id] =
+                        if (c.dominio == e.nome) c.copy(origemDominio = OrigemDominio.SNI)
+                        else c.copy(dominio = e.nome, origemDominio = OrigemDominio.DNS)
+                    else -> {}
+                }
             }
             is Evento.Perda -> eventosPerdidos += e.descartados
         }

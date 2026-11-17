@@ -46,8 +46,9 @@ Data: 2026-11-16. Plano: `docs/superpowers/plans/2026-11-13-sentinela-v1.md`.
 ## Limitações conhecidas (declarar no artigo)
 
 1. Sem root, só o tráfego do próprio celular; nada de outros aparelhos da rede.
-2. HTTPS continua cifrado: o domínio vem do SNI ou do DNS. Com ECH, o SNI é o nome público do
-   provedor (ex.: `cloudflare-ech.com`), não o site.
+2. HTTPS continua cifrado: o domínio vem do SNI ou do DNS. Com ECH de verdade, o SNI é o nome
+   público do provedor (ex.: `cloudflare-ech.com`), não o site; com ECH falso (GREASE, que o Chrome
+   manda em quase toda conexão) o SNI é o próprio site. O DNS desempata (ver correção de 2026-11-17).
 3. QUIC (UDP 443) mostra o domínio só pelo DNS; "Forçar TCP" contorna.
 4. O dono da conexão é consultado até ~100 ms depois do início: UDP muito curto pode virar
    "desconhecido".
@@ -77,7 +78,7 @@ Plano: `docs/superpowers/plans/2026-11-16-sentinela-v1.1-mobile.md`.
 |---|---|---|
 | M1 | Ícone adaptativo a partir de `arte/Sentinela_icon.jpeg` | gaveta de apps no aparelho |
 | M2 | Sessão criada no início, gravada a cada 5 s, recuperada como "interrompida" se o app morrer | `force-stop` no meio: sessão volta com hash, 589 pacotes e 58 conexões |
-| M3 | SNI marcado quando o ClientHello usa ECH (`SNI·ECH`) | fixture com ECH conferida no tshark |
+| M3 | SNI marcado quando o ClientHello usa ECH (hoje `ECH?`, só quando o DNS não desempata) | fixture com ECH conferida no tshark |
 | M4 | Ignorar uma regra para um app (toque longo), com "Desfazer" | aparelho: 3 alertas → 2 |
 | M5 | CSV das conexões, normal e anonimizado (HMAC com sal por exportação) | aparelho: 504 linhas; nenhum IP/domínio real (achado e corrigido: IP do Wi-Fi como origem no QUIC) |
 | M6 | Relatório em PDF (identificação, integridade, cadeia de custódia, por app, alertas, domínios) | aparelho + `pdftotext` |
@@ -151,3 +152,25 @@ ele consulta as rotas da outra VPN (`RotasVpn.levaPelaVpn`, testada na JVM):
 
 Prova no aparelho, na rede de casa com o Tailscale ligado: o log mostrou o `EPERM`, e o mapa achou
 o roteador (portas 22 e 80, UPnP) e o PC (porta 445).
+
+## Testes na rede do trabalho (2026-11-17)
+
+Feitos pelo adb, com o celular liberado pelo Brendon. O mapa da rede não foi rodado: a rede é do
+trabalho.
+
+- **Custo de velocidade:** arquivo de 10 MB baixado pelo Chrome (HTTPS), 3 vezes de cada jeito.
+  Sem gravar: 16,2 / 16,5 / 15,5 s. Gravando: 13,3 / 18,0 / 18,1 s. Mediana 16,2 contra 18,0 s,
+  cerca de 11% mais lento, com bastante variação. Indicativo; repetir com mais rodadas numa rede
+  estável antes de citar no artigo.
+- **DNS privado (DoT, dns.google):** os alertas "DNS fora do caminho normal" apareceram para o
+  resolvedor do sistema (DoT) e para o Chrome (DoH, que ele liga junto). A configuração foi
+  restaurada ao fim.
+- **ECH falso (GREASE):** 87 de 227 conexões saíram marcadas como ECH, todas com o nome real do
+  site no SNI (`www.bbc.com`, `static.files.bbci.co.uk`, `dns.google`), conferido no pcap pelo
+  tshark. O Chrome manda ECH falso de propósito, e ele não se distingue do verdadeiro pelo pacote.
+  Correção: o DNS desempata. Mesmo nome que o DNS resolveu para aquele IP é o nome real (SNI).
+  Nome diferente é provável ECH de verdade, e fica o nome do DNS. Sem DNS para comparar, a
+  conexão aparece como `ECH?`. O desempate também vale quando o DNS chega depois. No aparelho,
+  depois da correção, nenhuma conexão ficou `ECH?` e as 91 com SNI mostraram o nome real.
+- **Resolvedor de DNS (uid 1051, AID_DNS):** aparecia como "Sistema (uid 1051)"; agora é
+  "DNS do sistema". Conferido no aparelho com DoT ligado.

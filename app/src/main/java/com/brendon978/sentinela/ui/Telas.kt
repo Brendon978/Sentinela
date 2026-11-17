@@ -290,7 +290,7 @@ private fun LinhaConexao(l: LinhaFluxo, modifier: Modifier = Modifier) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(l.dominio ?: l.ipDestino, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
                 if (l.dominio != null) Selo(
-                    when (l.origemDominio) { "SNI" -> "SNI"; "SNI_ECH" -> "SNI·ECH"; else -> "DNS" }
+                    when (l.origemDominio) { "SNI" -> "SNI"; "SNI_ECH" -> "ECH?"; else -> "DNS" }
                 )
             }
             Text(

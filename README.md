@@ -22,7 +22,7 @@ reencaminha pacotes é C, compilado pelo NDK.
 - **Sessões salvas** com `.pcap` (Raw IP), `.sha256` no formato do `sha256sum` e banco SQLite;
   exportação pelo seletor de arquivos do Android.
 - **Forçar TCP** (opcional): bloqueia QUIC para os apps usarem TCP e o SNI aparecer.
-- **v1.1:** gravação salva a cada 5 s (e recuperada se o app morrer), marca de ECH no SNI,
+- **v1.1:** gravação salva a cada 5 s (e recuperada se o app morrer), marca de ECH no SNI (com o DNS separando o ECH falso do Chrome),
   ignorar alerta por app, exportação em CSV (normal e anonimizada) e relatório em PDF, mapa da rede
   Wi-Fi (só em rede autorizada) e IA de linha de base por app (Isolation Forest).
 - **v1.2:** motor em `epoll`, captura separada do serviço (testada na JVM), gravação de 5 s só

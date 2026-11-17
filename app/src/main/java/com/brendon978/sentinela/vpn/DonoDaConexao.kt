@@ -31,6 +31,9 @@ interface FontePacotes {
  */
 private val DNS_DO_SISTEMA = App(-1, null, "DNS do sistema")
 
+/** AID_DNS: o resolvedor do Android usa esse uid para o DNS privado (DoT). */
+private const val UID_RESOLVEDOR = 1051
+
 class DonoDaConexao(
     private val fonteDono: FonteDono,
     private val fontePacotes: FontePacotes,
@@ -47,7 +50,7 @@ class DonoDaConexao(
         if (uid < 0) return if (e.destino in dnsVirtuais) DNS_DO_SISTEMA else App(-1, null, App.SEM_APP)
         return porUid.getOrPut(uid) {
             val pacote = fontePacotes.pacotes(uid).firstOrNull()
-            if (pacote == null) App(uid, null, "Sistema (uid $uid)")
+            if (pacote == null) App(uid, null, if (uid == UID_RESOLVEDOR) DNS_DO_SISTEMA.rotulo else "Sistema (uid $uid)")
             else App(uid, pacote, fontePacotes.rotulo(pacote) ?: pacote)
         }
     }

@@ -71,4 +71,9 @@ class DonoDaConexaoTest {
         d.dono(fluxo(2))
         assertEquals(1, f.rotulosPedidos.size)
     }
+
+    @Test fun `uid 1051 e o resolvedor de dns do android (DoT)`() {
+        val f = Fontes(mapOf(5 to 1051), emptyMap())
+        assertEquals("DNS do sistema", DonoDaConexao(f, f).dono(fluxo(5)).rotulo)
+    }
 }
