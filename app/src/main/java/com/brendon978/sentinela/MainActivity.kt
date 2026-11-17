@@ -1,5 +1,8 @@
 package com.brendon978.sentinela
 
+import com.brendon978.sentinela.ui.Formato
+import com.brendon978.sentinela.ui.DialogoExportacao
+import com.brendon978.sentinela.ui.tema.TemaSentinela
 import android.Manifest
 import android.net.Uri
 import android.net.VpnService
@@ -10,7 +13,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.ui.graphics.Color
 import com.brendon978.sentinela.dados.Banco
 import com.brendon978.sentinela.dados.SessaoSalva
 import androidx.lifecycle.lifecycleScope
@@ -87,7 +88,6 @@ class MainActivity : ComponentActivity() {
         if (uri != null) copiar(File(s.caminhoPcap), uri)
         salvarSha.launch(Evidencia.arquivoSha256(s.caminhoPcap).name)
     }
-    private enum class Formato { CSV, CSV_ANONIMO, PDF }
     private var formatoPendente = Formato.CSV
     private lateinit var banco: Banco
 
@@ -180,9 +180,12 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             runCatching { SessaoFinal.recuperar(banco) }
         }
+        val prefs = getSharedPreferences("sentinela", MODE_PRIVATE)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFB388FF))) {
-                Surface(Modifier.fillMaxSize()) {
+            var temaClaro by remember { mutableStateOf(prefs.getBoolean("tema_claro", false)) }
+            fun trocarTema(claro: Boolean) { temaClaro = claro; prefs.edit().putBoolean("tema_claro", claro).apply() }
+            TemaSentinela(temaClaro) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                   Box(Modifier.safeDrawingPadding()) {
                     var tela by remember { mutableStateOf<Tela>(Tela.Inicio) }
                     var escolhendoExportacao by remember { mutableStateOf<SessaoSalva?>(null) }
@@ -204,27 +207,9 @@ class MainActivity : ComponentActivity() {
                     }
 
                     escolhendoExportacao?.let { s ->
-                        androidx.compose.material3.AlertDialog(
-                            onDismissRequest = { escolhendoExportacao = null },
-                            title = { androidx.compose.material3.Text("Exportar sessão") },
-                            text = {
-                                androidx.compose.foundation.layout.Column {
-                                    listOf(
-                                        "Captura (.pcap + .sha256)" to null, "Conexões em CSV" to Formato.CSV,
-                                        "Conexões em CSV anonimizado" to Formato.CSV_ANONIMO, "Relatório em PDF" to Formato.PDF,
-                                    ).forEach { (rotulo, f) ->
-                                        androidx.compose.material3.TextButton(onClick = { escolhendoExportacao = null; exportar(s, f) }) {
-                                            androidx.compose.material3.Text(rotulo)
-                                        }
-                                    }
-                                }
-                            },
-                            confirmButton = {},
-                            dismissButton = {
-                                androidx.compose.material3.TextButton(onClick = { escolhendoExportacao = null }) {
-                                    androidx.compose.material3.Text("Cancelar")
-                                }
-                            },
+                        DialogoExportacao(
+                            aoEscolher = { f -> escolhendoExportacao = null; exportar(s, f) },
+                            aoCancelar = { escolhendoExportacao = null },
                         )
                     }
                     BackHandler(tela != Tela.Inicio) {
@@ -237,6 +222,8 @@ class MainActivity : ComponentActivity() {
                             aoParar = { SessaoService.parar(this@MainActivity) },
                             aoAbrirAoVivo = { tela = Tela.AoVivo },
                             aoAbrirRede = { tela = Tela.Rede },
+                            temaClaro = temaClaro,
+                            aoTrocarTema = ::trocarTema,
                             aoAbrirSessao = { tela = Tela.Salva(it) },
                             aoExportar = { s -> escolhendoExportacao = s },
                             aoApagar = { s -> lifecycleScope.launch(Dispatchers.IO) { SessaoFinal.apagar(banco, s) } },
@@ -261,7 +248,7 @@ class MainActivity : ComponentActivity() {
                           }
                         }
                         Tela.AoVivo -> TelaConexoes(
-                            "Ao vivo", estado.linhas, estado.alertas, { tela = Tela.Inicio },
+                            "Ao vivo", estado.linhas, estado.alertas, { tela = Tela.Inicio }, gravando = estado.gravando,
                             aoIgnorar = { mudarExcecao(it.pacote to it.regra, ignorar = true) },
                         ) { tela = Tela.Detalhe(it, Tela.AoVivo, estado.caminhoPcap) }
                         is Tela.Salva -> {
